@@ -236,6 +236,7 @@ void EnvelopeDisplay::paint (juce::Graphics& g)
 //  Editor
 // ===========================================================================
 
+
 VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), display (p)
 {
@@ -248,6 +249,7 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     styleRotary (gateSlider,    gateLabel,    "GATE",    Palette::muted);
     styleRotary (mixSlider,     mixLabel,     "MIX",     Palette::muted);
     styleRotary (outputSlider,  outputLabel,  "OUTPUT",  Palette::muted);
+    styleRotary (aiAmountSlider, aiAmountLabel, "AMOUNT", Palette::tract);
 
     genderSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     genderSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
@@ -260,16 +262,29 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     genderLabel.setColour (juce::Label::textColourId, Palette::muted);
     addAndMakeVisible (genderLabel);
 
-    styleRotary (aiAmountSlider,  aiAmountLabel,  "AMOUNT", Palette::tract);
-    styleRotary (aiSpeakerSlider, aiSpeakerLabel, "VOICE",  Palette::tract);
+    // The morph slider is the whole Vocoflex idea in one control: identity is
+    // a vector, so you can stand between two of them.
+    morphSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    morphSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    morphSlider.setColour (juce::Slider::trackColourId, Palette::tract);
+    addAndMakeVisible (morphSlider);
+
+    morphLabel.setText ("A  <-  MORPH  ->  B", juce::dontSendNotification);
+    morphLabel.setJustificationType (juce::Justification::centred);
+    morphLabel.setFont (monoFont (10.0f));
+    morphLabel.setColour (juce::Label::textColourId, Palette::muted);
+    addAndMakeVisible (morphLabel);
 
     addAndMakeVisible (linkButton);
     addAndMakeVisible (aiButton);
 
-    encoderButton.onClick = [this] { chooseModelFile (true); };
-    decoderButton.onClick = [this] { chooseModelFile (false); };
-    addAndMakeVisible (encoderButton);
-    addAndMakeVisible (decoderButton);
+    modelsButton.onClick = [this] { chooseModelFolder(); };
+    voiceAButton.onClick = [this] { chooseReferenceVoice (0); };
+    voiceBButton.onClick = [this] { chooseReferenceVoice (1); };
+
+    addAndMakeVisible (modelsButton);
+    addAndMakeVisible (voiceAButton);
+    addAndMakeVisible (voiceBButton);
 
     for (auto* label : { &statusLabel, &latencyLabel })
     {
@@ -281,19 +296,19 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     latencyLabel.setJustificationType (juce::Justification::centredRight);
 
     auto& state = processor.apvts;
-    pitchAtt     = std::make_unique<SliderAttachment> (state, ParamID::pitch,     pitchSlider);
-    formantAtt   = std::make_unique<SliderAttachment> (state, ParamID::formant,   formantSlider);
-    genderAtt    = std::make_unique<SliderAttachment> (state, ParamID::gender,    genderSlider);
-    detailAtt    = std::make_unique<SliderAttachment> (state, ParamID::detail,    detailSlider);
-    gateAtt      = std::make_unique<SliderAttachment> (state, ParamID::gate,      gateSlider);
-    mixAtt       = std::make_unique<SliderAttachment> (state, ParamID::mix,       mixSlider);
-    outputAtt    = std::make_unique<SliderAttachment> (state, ParamID::output,    outputSlider);
-    aiAmountAtt  = std::make_unique<SliderAttachment> (state, ParamID::aiAmount,  aiAmountSlider);
-    aiSpeakerAtt = std::make_unique<SliderAttachment> (state, ParamID::aiSpeaker, aiSpeakerSlider);
-    linkAtt      = std::make_unique<ButtonAttachment> (state, ParamID::link,      linkButton);
-    aiAtt        = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable,  aiButton);
+    pitchAtt    = std::make_unique<SliderAttachment> (state, ParamID::pitch,    pitchSlider);
+    formantAtt  = std::make_unique<SliderAttachment> (state, ParamID::formant,  formantSlider);
+    genderAtt   = std::make_unique<SliderAttachment> (state, ParamID::gender,   genderSlider);
+    detailAtt   = std::make_unique<SliderAttachment> (state, ParamID::detail,   detailSlider);
+    gateAtt     = std::make_unique<SliderAttachment> (state, ParamID::gate,     gateSlider);
+    mixAtt      = std::make_unique<SliderAttachment> (state, ParamID::mix,      mixSlider);
+    outputAtt   = std::make_unique<SliderAttachment> (state, ParamID::output,   outputSlider);
+    aiAmountAtt = std::make_unique<SliderAttachment> (state, ParamID::aiAmount, aiAmountSlider);
+    morphAtt    = std::make_unique<SliderAttachment> (state, ParamID::morph,    morphSlider);
+    linkAtt     = std::make_unique<ButtonAttachment> (state, ParamID::link,     linkButton);
+    aiAtt       = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable, aiButton);
 
-    setSize (760, 470);
+    setSize (780, 600);
     startTimerHz (4);
 }
 
@@ -306,7 +321,7 @@ void VoiceMorphAudioProcessorEditor::styleRotary (juce::Slider& slider, juce::La
                                                   const juce::String& name, juce::Colour accent)
 {
     slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 14);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 15);
     slider.setColour (juce::Slider::rotarySliderFillColourId, accent);
     addAndMakeVisible (slider);
 
@@ -317,39 +332,73 @@ void VoiceMorphAudioProcessorEditor::styleRotary (juce::Slider& slider, juce::La
     addAndMakeVisible (label);
 }
 
-void VoiceMorphAudioProcessorEditor::chooseModelFile (bool isEncoder)
+// ---------------------------------------------------------------------------
+//  Loading
+// ---------------------------------------------------------------------------
+
+void VoiceMorphAudioProcessorEditor::chooseModelFolder()
 {
     chooser = std::make_unique<juce::FileChooser> (
-        isEncoder ? "Choose the content encoder (.onnx)" : "Choose the decoder (.onnx)",
-        juce::File::getSpecialLocation (juce::File::userHomeDirectory),
-        "*.onnx");
+        "Select the folder holding content.onnx, speaker.onnx and decoder.onnx",
+        juce::File::getSpecialLocation (juce::File::userHomeDirectory));
+
+    const auto flags = juce::FileBrowserComponent::openMode
+                     | juce::FileBrowserComponent::canSelectDirectories;
+
+    chooser->launchAsync (flags, [this] (const juce::FileChooser& fc)
+    {
+        const auto folder = fc.getResult();
+
+        if (folder == juce::File())
+            return;
+
+        juce::String error;
+
+        if (processor.loadNeuralModels (folder, error))
+            modelsButton.setButtonText ("Models: " + folder.getFileName());
+        else
+            modelsButton.setButtonText ("Load models folder");
+    });
+}
+
+void VoiceMorphAudioProcessorEditor::chooseReferenceVoice (int slot)
+{
+    chooser = std::make_unique<juce::FileChooser> (
+        "Choose a recording of the voice to imitate",
+        juce::File::getSpecialLocation (juce::File::userMusicDirectory),
+        "*.wav;*.aiff;*.aif;*.flac;*.mp3;*.ogg");
 
     const auto flags = juce::FileBrowserComponent::openMode
                      | juce::FileBrowserComponent::canSelectFiles;
 
-    chooser->launchAsync (flags, [this, isEncoder] (const juce::FileChooser& fc)
+    chooser->launchAsync (flags, [this, slot] (const juce::FileChooser& fc)
     {
         const auto file = fc.getResult();
 
         if (file == juce::File())
             return;
 
-        (isEncoder ? encoderFile : decoderFile) = file;
-
-        (isEncoder ? encoderButton : decoderButton).setButtonText (file.getFileNameWithoutExtension());
-
-        tryLoadModels();
+        juce::String error;
+        processor.loadReferenceVoice (slot, file, error);
+        refreshVoiceButtons();
     });
 }
 
-void VoiceMorphAudioProcessorEditor::tryLoadModels()
+void VoiceMorphAudioProcessorEditor::refreshVoiceButtons()
 {
-    if (! encoderFile.existsAsFile() || ! decoderFile.existsAsFile())
-        return;
+    auto& neural = processor.getNeural();
 
-    juce::String error;
-    processor.loadNeuralModel (encoderFile, decoderFile, error);
+    auto describe = [&neural] (int slot, const char* letter)
+    {
+        const auto name = neural.getReferenceName (slot);
+        return juce::String ("Voice ") + letter + ": " + (name.isEmpty() ? "empty" : name);
+    };
+
+    voiceAButton.setButtonText (describe (0, "A"));
+    voiceBButton.setButtonText (describe (1, "B"));
 }
+
+// ---------------------------------------------------------------------------
 
 void VoiceMorphAudioProcessorEditor::timerCallback()
 {
@@ -360,13 +409,20 @@ void VoiceMorphAudioProcessorEditor::timerCallback()
 
     juce::String right = juce::String (latencyMs, 1) + " ms latency";
 
-    if (processor.getNeural().isModelLoaded())
+    if (processor.getNeural().isReady())
         right += "   load " + juce::String (juce::roundToInt (processor.getNeural().getInferenceLoad() * 100.0f)) + "%";
 
     latencyLabel.setText (right, juce::dontSendNotification);
 
     const bool overloaded = processor.getNeural().getInferenceLoad() > 0.95f;
     latencyLabel.setColour (juce::Label::textColourId, overloaded ? Palette::warn : Palette::muted);
+
+    // Morphing only means anything with two voices to morph between.
+    const bool bothLoaded = processor.getNeural().hasReferenceVoice (0)
+                         && processor.getNeural().hasReferenceVoice (1);
+
+    morphSlider.setEnabled (bothLoaded);
+    morphLabel.setColour (juce::Label::textColourId, bothLoaded ? Palette::muted : Palette::rule);
 }
 
 void VoiceMorphAudioProcessorEditor::paint (juce::Graphics& g)
@@ -375,53 +431,57 @@ void VoiceMorphAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (Palette::text);
     g.setFont (monoFont (15.0f, true));
-    g.drawText ("VOICEMORPH", 20, 14, 220, 20, juce::Justification::centredLeft, false);
+    g.drawText ("VOICEMORPH", 20, 14, 240, 20, juce::Justification::centredLeft, false);
 
     g.setColour (Palette::muted);
     g.setFont (monoFont (9.5f));
-    g.drawText ("source / filter voice transformer", 20, 32, 320, 14,
+    g.drawText ("source / filter voice transformer", 20, 32, 340, 14,
                 juce::Justification::centredLeft, false);
 
+    const auto left  = 20.0f;
+    const auto right = static_cast<float> (getWidth() - 20);
+
     g.setColour (Palette::rule);
-    g.drawHorizontalLine (330, 20.0f, static_cast<float> (getWidth() - 20));
-    g.drawHorizontalLine (getHeight() - 34, 20.0f, static_cast<float> (getWidth() - 20));
+    g.drawHorizontalLine (topDividerY,    left, right);
+    g.drawHorizontalLine (footerDividerY, left, right);
 
     g.setColour (Palette::muted);
     g.setFont (monoFont (9.5f, true));
-    g.drawText ("NEURAL CONVERSION", 20, 338, 200, 14, juce::Justification::centredLeft, false);
+    g.drawText ("NEURAL CONVERSION", 20, neuralHeaderY, 240, 14,
+                juce::Justification::centredLeft, false);
 }
 
 void VoiceMorphAudioProcessorEditor::resized()
 {
-    auto area = getLocalBounds().reduced (20);
-    area.removeFromTop (38);
-
-    // --- Display and the two main axes -------------------------------------
-    auto top = area.removeFromTop (170);
-    display.setBounds (top.removeFromLeft (top.getWidth() - 210).reduced (0, 2));
-
-    auto knobs = top.reduced (10, 0);
     auto placeRotary = [] (juce::Rectangle<int> cell, juce::Slider& s, juce::Label& l)
     {
         l.setBounds (cell.removeFromTop (12));
         s.setBounds (cell);
     };
 
-    placeRotary (knobs.removeFromLeft (knobs.getWidth() / 2).reduced (4, 0), pitchSlider, pitchLabel);
-    placeRotary (knobs.reduced (4, 0), formantSlider, formantLabel);
+    auto area = getLocalBounds().reduced (20);
+    area.removeFromTop (38);
 
-    area.removeFromTop (10);
+    // --- Display and the two main axes -------------------------------------
+    auto top = area.removeFromTop (178);
+    display.setBounds (top.removeFromLeft (top.getWidth() - 220).reduced (0, 2));
+
+    auto mainKnobs = top.reduced (12, 6);
+    placeRotary (mainKnobs.removeFromLeft (mainKnobs.getWidth() / 2).reduced (4, 0), pitchSlider, pitchLabel);
+    placeRotary (mainKnobs.reduced (4, 0), formantSlider, formantLabel);
+
+    area.removeFromTop (14);
 
     // --- Gender macro -------------------------------------------------------
     auto macro = area.removeFromTop (44);
     genderLabel.setBounds (macro.removeFromTop (14));
     genderSlider.setBounds (macro.reduced (60, 4));
 
-    // --- Utility row --------------------------------------------------------
-    auto utility = area.removeFromTop (74);
-    linkButton.setBounds (utility.removeFromRight (190).withTrimmedTop (24).withHeight (20));
+    area.removeFromTop (10);
 
-    const int cellWidth = utility.getWidth() / 4;
+    // --- Utility row --------------------------------------------------------
+    auto utility = area.removeFromTop (78);
+    linkButton.setBounds (utility.removeFromRight (196).withTrimmedTop (26).withHeight (20));
 
     const std::array<std::pair<juce::Slider*, juce::Label*>, 4> utilityControls {{
         { &detailSlider, &detailLabel },
@@ -430,29 +490,45 @@ void VoiceMorphAudioProcessorEditor::resized()
         { &outputSlider, &outputLabel }
     }};
 
+    const int cellWidth = utility.getWidth() / 4;
+
     for (const auto& control : utilityControls)
         placeRotary (utility.removeFromLeft (cellWidth).reduced (6, 0), *control.first, *control.second);
 
-    area.removeFromTop (26);
+    // --- Divider and neural section header ----------------------------------
+    area.removeFromTop (16);
+    topDividerY = area.getY();
+    area.removeFromTop (10);
+    neuralHeaderY = area.getY();
+    area.removeFromTop (22);
 
     // --- Neural section -----------------------------------------------------
-    auto ai = area.removeFromTop (78);
+    auto neural = area.removeFromTop (132);
 
-    auto aiKnobs = ai.removeFromRight (170);
-    placeRotary (aiKnobs.removeFromLeft (85).reduced (6, 0), aiAmountSlider,  aiAmountLabel);
-    placeRotary (aiKnobs.reduced (6, 0),                     aiSpeakerSlider, aiSpeakerLabel);
+    auto amountCell = neural.removeFromRight (96);
+    placeRotary (amountCell.removeFromTop (74).reduced (8, 0), aiAmountSlider, aiAmountLabel);
 
-    auto controls = ai.reduced (0, 6);
-    aiButton.setBounds (controls.removeFromTop (22));
-    controls.removeFromTop (6);
+    neural.removeFromRight (12);
 
-    auto buttons = controls.removeFromTop (24);
-    encoderButton.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2 - 5));
-    buttons.removeFromLeft (10);
-    decoderButton.setBounds (buttons);
+    aiButton.setBounds (neural.removeFromTop (22));
+    neural.removeFromTop (8);
+
+    modelsButton.setBounds (neural.removeFromTop (26));
+    neural.removeFromTop (8);
+
+    auto voices = neural.removeFromTop (26);
+    voiceAButton.setBounds (voices.removeFromLeft (voices.getWidth() / 2 - 5));
+    voices.removeFromLeft (10);
+    voiceBButton.setBounds (voices);
+
+    neural.removeFromTop (10);
+    morphLabel.setBounds (neural.removeFromTop (14));
+    morphSlider.setBounds (neural.removeFromTop (18).reduced (40, 0));
 
     // --- Footer -------------------------------------------------------------
-    auto footer = getLocalBounds().removeFromBottom (28).reduced (20, 6);
-    latencyLabel.setBounds (footer.removeFromRight (240));
+    auto footer = getLocalBounds().removeFromBottom (30).reduced (20, 8);
+    footerDividerY = footer.getY() - 8;
+
+    latencyLabel.setBounds (footer.removeFromRight (250));
     statusLabel.setBounds (footer);
 }

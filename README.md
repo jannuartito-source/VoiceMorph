@@ -11,9 +11,10 @@ a listener how big your vocal tract is). It shifts them independently. This is
 what makes a male↔female transformation sound like a person rather than a
 chipmunk. It works out of the box, runs in about 30 ms, and needs no model.
 
-**The neural stage** does what Vocoflex does: encode speech into a
-speaker-independent representation, then resynthesise it with a different
-identity. This one needs trained models that you supply. See below.
+**The neural stage** does what Vocoflex does: it listens to a few seconds of
+any voice, reduces that voice to a single vector, and wears it. Zero-shot — no
+training per target. Load two references and morph between them. This needs
+three general-purpose ONNX models that you supply. See below.
 
 ---
 
@@ -148,43 +149,92 @@ reaching the plugin.
 
 ## Supplying neural models
 
-The plugin loads two ONNX graphs.
+The plugin does not ship with models, and it cannot: the useful ones are
+hundreds of megabytes and carry licences that forbid redistribution.
 
-**1. Content encoder.** ContentVec or HuBERT, 16 kHz mono in, frame embeddings
-out. Export from the RVC repo, or convert from a fairseq checkpoint. Input
-shape `[1, 1, samples]`, output `[1, frames, 768]`.
+### The part that matters: zero-shot, not trained-per-voice
 
-**2. Decoder.** An RVC or so-vits-svc generator taking content frames, an f0
-contour, and a speaker index. Both projects have ONNX export scripts.
+There are two families of voice conversion, and confusing them wastes weeks.
 
-Tensor names differ between export scripts. Open your files in
-[Netron](https://netron.app), read the actual input and output names, and edit
-`encoderInputNames` / `decoderInputNames` in
-`Source/ai/NeuralVoiceConverter.cpp` to match.
+**Trained per voice** — RVC, so-vits-svc. One model *is* one target voice. To
+sound like a specific person you collect ten-plus minutes of clean recordings
+of them, rent a GPU, and train for hours. Excellent quality. No way to point
+it at an arbitrary audio file and have it imitate that.
 
-### What is honestly missing
+**Zero-shot** — FreeVC, OpenVoice, kNN-VC, Seed-VC. Three general models,
+trained once by someone else, that work on voices they have never heard. A
+speaker encoder listens to a few seconds of anybody and produces one vector,
+typically 256 numbers, describing the identity. The decoder wears that vector
+like a mask.
 
-`runModel()` currently feeds the decoder a **flat f0 contour**. That produces
-intelligible but monotone speech. A usable build needs a pitch tracker — RVC
-uses RMVPE, which exports to ONNX cleanly — run over the 16 kHz block and
-scaled by the pitch offset before it reaches the decoder. That is the single
-highest-value thing to add next.
+Vocoflex is the second kind. Its 2D map is a space of those vectors; dragging
+the ball interpolates between the ones you loaded. That is why it can imitate
+a file you drop in, instantly, with no training.
 
-Also worth knowing:
+This plugin now implements the second kind.
 
-- **Latency.** The neural stage works in 200 ms blocks with 50% Hann overlap,
-  so it adds 200 ms on top of the vocoder's 32 ms. That is fine for streaming
-  and unusable for singing along to a monitor. Shorter blocks cut latency but
-  give the encoder less context and the quality falls off quickly below ~100 ms.
-- **CPU.** Watch the load figure in the footer. Above 100% the worker cannot
-  keep up, the output FIFO runs dry, and the plugin falls back to the vocoder
-  output — audible as a sudden change in character rather than a dropout.
-- **Overlap-add on neural output** is a compromise. Consecutive blocks are
-  generated independently, so their phase does not necessarily agree, and the
-  crossfade can comb slightly. Conditioning the decoder on the previous block's
-  state is the proper fix and a substantial piece of work.
+### The three graphs
 
----
+Put all three in one folder with exactly these names:
+
+| File | Job | Shape |
+|---|---|---|
+| `content.onnx` | Speech to phonetic frames, identity stripped | `[1, samples]` at 16 kHz in, `[1, frames, D]` out |
+| `speaker.onnx` | A few seconds of any voice to one identity vector | `[1, samples]` at 16 kHz in, `[1, 256]` out |
+| `decoder.onnx` | Frames plus identity back to speech | frames + `[1, 256, 1]` in, audio out |
+
+Then click **Load models folder**, then **Voice A**, and point it at any
+recording of the person you want to sound like. Five to fifteen seconds of
+clean speech is the sweet spot — a whole song wastes time, and anything with
+two people talking blurs the identity into an average of both.
+
+Load a second recording into **Voice B** and the **MORPH** slider comes alive.
+That slider is doing plain arithmetic on the two vectors: interpolate, then
+renormalise back onto the unit sphere. The renormalise step matters. A blunt
+average of two points on a sphere lands inside it, and voices from the
+interior sound washed out and characterless — present but nobody in
+particular.
+
+### Where to get them
+
+**FreeVC** is the most direct fit; its architecture is already content encoder
+plus speaker encoder plus decoder, so the three exports map one to one.
+
+**OpenVoice v2** separates tone colour from content even more cleanly, and its
+tone-colour converter is close to a drop-in for `decoder.onnx`.
+
+**Seed-VC** is newer, sounds better, and has a real-time mode, but is heavier.
+
+All three publish PyTorch checkpoints. Getting from a checkpoint to
+`something.onnx` means writing a short export script with
+`torch.onnx.export`, marking the time axis dynamic. This is the part of the
+project that still needs doing, and it is a real afternoon of work, not a
+download.
+
+### Then fix the tensor names
+
+Export scripts disagree about what to call things. Open each `.onnx` in
+[Netron](https://netron.app), read the actual input and output names off the
+diagram, and edit the six lines near the top of `Impl` in
+`Source/ai/NeuralVoiceConverter.cpp`. Names that do not match produce an
+immediate ONNX Runtime exception, logged, with the audio passing through
+unconverted — so a mismatch sounds like the neural stage doing nothing rather
+than like a crash.
+
+### Honest limits
+
+- **Latency.** 200 ms blocks with 50 % overlap, on top of the vocoder's 32 ms.
+  Fine for streaming and voice chat. Unusable for singing to a monitor.
+- **CPU.** Watch the load figure in the footer. Above 100 % the worker cannot
+  keep up, the FIFO drains, and the plugin silently falls back to the vocoder
+  output — audible as a sudden change of character, not a dropout.
+- **Block independence.** Consecutive blocks are generated without knowledge
+  of each other, so their phase need not agree and the crossfade can comb
+  faintly. Conditioning the decoder on the previous block's state is the
+  proper fix and a substantial piece of work.
+- **No f0 tracking yet.** Pitch comes from the vocoder stage upstream rather
+  than being handed to the decoder. For models that accept an f0 input this
+  leaves quality on the table.
 
 ## Architecture
 
@@ -205,7 +255,7 @@ aligned so the mix control does not comb.
 | `dsp/CepstralEnvelope.h` | Formant estimation and warping |
 | `dsp/PhaseVocoderEngine.*` | STFT, source/filter split, pitch shift, resynthesis |
 | `dsp/NoiseGate.h` | Pre-vocoder gate with hysteresis |
-| `ai/NeuralVoiceConverter.*` | Threading, FIFOs, resampling, ONNX inference |
+| `ai/NeuralVoiceConverter.*` | Threading, FIFOs, resampling, speaker embeddings, ONNX inference |
 | `PluginProcessor.*` | Parameters, signal chain, latency reporting |
 | `PluginEditor.*` | UI and the envelope display |
 

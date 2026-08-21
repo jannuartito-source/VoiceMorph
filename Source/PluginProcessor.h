@@ -19,7 +19,7 @@ namespace ParamID
     inline constexpr const char* output     = "output";
     inline constexpr const char* aiEnable   = "aiEnable";
     inline constexpr const char* aiAmount   = "aiAmount";
-    inline constexpr const char* aiSpeaker  = "aiSpeaker";
+    inline constexpr const char* morph      = "morph";
 }
 
 class VoiceMorphAudioProcessor : public juce::AudioProcessor,
@@ -57,8 +57,11 @@ public:
     PhaseVocoderEngine&   getEngine() noexcept { return engine; }
     NeuralVoiceConverter& getNeural() noexcept { return neural; }
 
-    /** Loads a pair of ONNX graphs and updates the reported latency. */
-    bool loadNeuralModel (const juce::File& encoder, const juce::File& decoder, juce::String& errorOut);
+    /** Loads content.onnx, speaker.onnx and decoder.onnx from one folder. */
+    bool loadNeuralModels (const juce::File& folder, juce::String& errorOut);
+
+    /** Analyses an audio file and stores its identity vector in a slot. */
+    bool loadReferenceVoice (int slot, const juce::File& audioFile, juce::String& errorOut);
 
     juce::String getStatusMessage() const;
 

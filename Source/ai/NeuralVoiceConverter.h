@@ -1,38 +1,46 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 #include <memory>
 #include <vector>
 
 /**
-    Neural voice-conversion stage.
+    Zero-shot voice conversion — the Vocoflex mechanic.
 
-    This is the part that does what Vocoflex does: instead of moving formants
-    around with a filter, it encodes speech into a content representation that
-    has had the speaker's identity stripped out, then re-synthesises it with a
-    different identity. The phase vocoder can make you sound taller or shorter.
-    This can make you sound like a different person.
+    The important idea, and the one that separates this from RVC or
+    so-vits-svc: nothing here is trained on your target voice. Three
+    general-purpose models do the work.
 
-    The plugin cannot do that on its own. It needs two trained models, which
-    you supply as ONNX files:
+      1. A **content encoder** turns your speech into frames that describe
+         *what was said* with the speaker's identity stripped out.
+      2. A **speaker encoder** listens to a few seconds of any voice and
+         squeezes it into one vector, typically 256 numbers. That vector is
+         the voice's identity: its "tone colour".
+      3. A **decoder** puts the two back together.
 
-      1. A content encoder (ContentVec or HuBERT, 16 kHz in, ~768-dim frames
-         out). This throws away timbre and keeps phonetic content.
-      2. A decoder / generator that takes those frames plus a speaker embedding
-         and an f0 contour, and produces audio.
+    Because identity is just a vector, you can do arithmetic on it. Load two
+    reference voices, interpolate between their vectors, and you get a voice
+    that exists between them. That is exactly what the 2D map in Vocoflex is:
+    a space of speaker embeddings you navigate by interpolation. This class
+    exposes a one-dimensional version of it — a morph slider between two
+    loaded references — because a line is honest about what the maths does
+    and a plane mostly just looks better in screenshots.
 
-    Both are exportable from the RVC and so-vits-svc toolchains. See README.md.
+    You supply the three models as ONNX files. See README.md for which
+    published models work and how to export them.
 
-    Threading: the audio thread only ever pushes to and pops from lock-free
-    FIFOs. Inference runs on a worker thread, in Hann-windowed overlapping
-    blocks that are overlap-added back together. This costs one block of
-    latency, reported to the host.
+    Threading: the audio thread only touches lock-free FIFOs. Inference runs
+    on a worker thread in overlapping blocks, costing one block of latency.
 */
 class NeuralVoiceConverter : private juce::Thread
 {
 public:
+    static constexpr int numReferenceSlots = 2;
+
     NeuralVoiceConverter();
     ~NeuralVoiceConverter() override;
 
@@ -40,65 +48,98 @@ public:
     void reset();
     void releaseResources();
 
-    /** Loads the two ONNX graphs. Safe to call while audio is running: the
-        worker is suspended for the swap. Returns false and fills @p errorOut
-        on failure. */
-    bool loadModel (const juce::File& contentEncoder,
-                    const juce::File& decoder,
-                    juce::String& errorOut);
+    // --- Models -------------------------------------------------------------
 
-    void unloadModel();
+    /** Loads all three graphs from one folder. Expects the files to be named
+        `content.onnx`, `speaker.onnx` and `decoder.onnx`. */
+    bool loadModels (const juce::File& folder, juce::String& errorOut);
 
-    bool isModelLoaded() const noexcept { return modelLoaded.load(); }
+    void unloadModels();
+    bool areModelsLoaded() const noexcept { return modelsLoaded.load(); }
     bool isBuiltWithOnnx() const noexcept;
 
-    void  setEnabled (bool shouldBeEnabled) noexcept { enabled.store (shouldBeEnabled); }
-    void  setTargetSpeaker (int speakerIndex) noexcept { targetSpeaker.store (speakerIndex); }
-    void  setPitchOffsetSemitones (float semitones) noexcept { pitchOffset.store (semitones); }
+    // --- Reference voices ---------------------------------------------------
 
-    int getLatencySamples() const noexcept { return latencySamples; }
+    /** Reads an audio file, runs the speaker encoder over it, and stores the
+        resulting identity vector in @p slot. Any format JUCE can read works;
+        five to fifteen seconds of clean speech is ideal. */
+    bool loadReferenceVoice (int slot, const juce::File& audioFile, juce::String& errorOut);
 
-    /** Pushes @p numSamples of mono input and pulls the same number of
-        converted samples back. Returns false if the output FIFO has run dry,
-        in which case @p samples is left untouched and the caller should keep
-        using its dry or DSP-processed signal. */
+    void clearReferenceVoice (int slot);
+    bool hasReferenceVoice (int slot) const noexcept;
+    juce::String getReferenceName (int slot) const;
+
+    /** 0 puts you fully on slot A, 1 fully on slot B, anything between is an
+        interpolation of the two identity vectors. */
+    void setMorph (float zeroToOne) noexcept
+    {
+        const auto clamped = juce::jlimit (0.0f, 1.0f, zeroToOne);
+
+        if (std::abs (clamped - morph.load()) > 1.0e-4f)
+        {
+            morph.store (clamped);
+            embeddingDirty.store (true);
+        }
+    }
+
+    // --- Runtime ------------------------------------------------------------
+
+    void setEnabled (bool shouldBeEnabled) noexcept { enabled.store (shouldBeEnabled); }
+    void setPitchOffsetSemitones (float semitones) noexcept { pitchOffset.store (semitones); }
+
+    int   getLatencySamples() const noexcept { return latencySamples; }
+    float getInferenceLoad()  const noexcept { return inferenceLoad.load(); }
+
+    /** True when there is enough loaded to actually convert: models plus at
+        least one reference voice. */
+    bool isReady() const noexcept;
+
+    /** Pushes mono input and pulls the same number of converted samples.
+        Returns false when the output FIFO has run dry, in which case
+        @p samples is untouched and the caller keeps its own signal. */
     bool process (float* samples, int numSamples);
-
-    /** Rough load figure, 0 to 1, for the editor. */
-    float getInferenceLoad() const noexcept { return inferenceLoad.load(); }
 
 private:
     void run() override;
     void processOneBlock();
-
-    /** Runs the loaded graphs over one block at host sample rate. Falls back
-        to a straight copy when no model is available, so the signal path is
-        always testable. */
     void runModel (const float* input, float* output, int numSamples);
 
-    double hostRate    = 48000.0;
-    int    blockSize   = 9600;   // N
-    int    hopSize     = 4800;   // N / 2
+    /** Interpolates the loaded identity vectors, then renormalises. Speaker
+        embeddings live on a unit sphere; a plain average of two points on a
+        sphere falls inside it, which reads as a washed-out, characterless
+        voice. Pushing the result back out to the surface fixes that. */
+    void buildBlendedEmbedding();
+
+    double hostRate       = 48000.0;
+    int    blockSize      = 9600;
+    int    hopSize        = 4800;
     int    latencySamples = 9600;
 
     juce::AbstractFifo inputFifo  { 1 };
     juce::AbstractFifo outputFifo { 1 };
     std::vector<float> inputStore, outputStore;
 
-    std::vector<float> history;       // previous hop, for the 50 % overlap
-    std::vector<float> workBuffer;    // N samples fed to the model
-    std::vector<float> modelOutput;   // N samples back from the model
-    std::vector<float> overlapAccum;  // N-sample overlap-add accumulator
-    std::vector<float> hannWindow;
-    std::vector<float> emitBuffer;
+    std::vector<float> history, workBuffer, modelOutput, overlapAccum, hannWindow, emitBuffer;
+
+    struct Reference
+    {
+        std::vector<float> embedding;
+        juce::String       name;
+        bool               loaded = false;
+    };
+
+    Reference          references[numReferenceSlots];
+    std::vector<float> blendedEmbedding;
 
     std::atomic<bool>  enabled       { false };
-    std::atomic<bool>  modelLoaded   { false };
-    std::atomic<int>   targetSpeaker { 0 };
+    std::atomic<bool>  modelsLoaded  { false };
+    std::atomic<float> morph         { 0.0f };
     std::atomic<float> pitchOffset   { 0.0f };
     std::atomic<float> inferenceLoad { 0.0f };
+    std::atomic<bool>  embeddingDirty { true };
 
-    juce::CriticalSection modelLock;
+    juce::CriticalSection    modelLock;
+    juce::AudioFormatManager formatManager;
 
     struct Impl;
     std::unique_ptr<Impl> impl;

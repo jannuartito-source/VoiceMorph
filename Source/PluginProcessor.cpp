@@ -71,8 +71,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoiceMorphAudioProcessor::cr
         ParameterID { ParamID::aiAmount, 1 }, "Neural amount",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
 
-    layout.add (std::make_unique<AudioParameterInt> (
-        ParameterID { ParamID::aiSpeaker, 1 }, "Target voice", 0, 63, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { ParamID::morph, 1 }, "Voice morph",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
 
     return layout;
 }
@@ -164,7 +165,7 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const float outParam     = apvts.getRawParameterValue (ParamID::output)->load();
     const bool  aiOn         = apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f;
     const float aiAmtParam   = apvts.getRawParameterValue (ParamID::aiAmount)->load();
-    const int   aiSpeaker    = static_cast<int> (apvts.getRawParameterValue (ParamID::aiSpeaker)->load());
+    const float morphParam   = apvts.getRawParameterValue (ParamID::morph)->load();
 
     if (getLatencySamples() != engine.getLatencySamples() + (aiOn ? neural.getLatencySamples() : 0))
         triggerAsyncUpdate();
@@ -177,7 +178,7 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     gate.setThresholdDb (gateParam);
 
     neural.setEnabled (aiOn);
-    neural.setTargetSpeaker (aiSpeaker);
+    neural.setMorph (morphParam);
     neural.setPitchOffsetSemitones (pitchParam + genderParam * kGenderPitchRange);
 
     mixSmoothed.setTargetValue (mixParam);
@@ -247,16 +248,26 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         buffer.copyFrom (ch, 0, monoBuffer, 0, 0, numSamples);
 }
 
-bool VoiceMorphAudioProcessor::loadNeuralModel (const juce::File& encoder,
-                                                const juce::File& decoder,
-                                                juce::String& errorOut)
+bool VoiceMorphAudioProcessor::loadNeuralModels (const juce::File& folder, juce::String& errorOut)
 {
-    const bool ok = neural.loadModel (encoder, decoder, errorOut);
+    const bool ok = neural.loadModels (folder, errorOut);
 
-    statusMessage = ok ? "Model loaded: " + decoder.getFileName()
+    statusMessage = ok ? "Models loaded. Now load a reference voice."
                        : "Load failed: " + errorOut;
 
-    updateLatency();
+    triggerAsyncUpdate();
+    return ok;
+}
+
+bool VoiceMorphAudioProcessor::loadReferenceVoice (int slot, const juce::File& audioFile,
+                                                   juce::String& errorOut)
+{
+    const bool ok = neural.loadReferenceVoice (slot, audioFile, errorOut);
+
+    statusMessage = ok ? "Reference " + juce::String (slot == 0 ? "A" : "B") + ": "
+                             + audioFile.getFileNameWithoutExtension()
+                       : "Reference failed: " + errorOut;
+
     return ok;
 }
 
@@ -265,8 +276,11 @@ juce::String VoiceMorphAudioProcessor::getStatusMessage() const
     if (! neural.isBuiltWithOnnx())
         return "DSP build. Neural stage not compiled in.";
 
-    if (! neural.isModelLoaded())
-        return "No model loaded. Pitch and formant still work.";
+    if (! neural.areModelsLoaded())
+        return "No models loaded. Pitch and formant still work.";
+
+    if (! neural.isReady())
+        return "Models loaded. Load a reference voice to convert.";
 
     return statusMessage;
 }

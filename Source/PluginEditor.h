@@ -75,8 +75,9 @@ private:
 
     void timerCallback() override;
     void styleRotary (juce::Slider&, juce::Label&, const juce::String& name, juce::Colour accent);
-    void chooseModelFile (bool isEncoder);
-    void tryLoadModels();
+    void chooseModelFolder();
+    void chooseReferenceVoice (int slot);
+    void refreshVoiceButtons();
 
     VoiceMorphAudioProcessor& processor;
     InstrumentLookAndFeel     lookAndFeel;
@@ -84,24 +85,30 @@ private:
     EnvelopeDisplay display;
 
     juce::Slider pitchSlider, formantSlider, genderSlider, detailSlider,
-                 gateSlider, mixSlider, outputSlider, aiAmountSlider, aiSpeakerSlider;
+                 gateSlider, mixSlider, outputSlider, aiAmountSlider, morphSlider;
 
     juce::Label pitchLabel, formantLabel, genderLabel, detailLabel,
-                gateLabel, mixLabel, outputLabel, aiAmountLabel, aiSpeakerLabel;
+                gateLabel, mixLabel, outputLabel, aiAmountLabel, morphLabel;
 
     juce::ToggleButton linkButton { "Link formants to pitch" };
     juce::ToggleButton aiButton   { "Neural conversion" };
 
-    juce::TextButton encoderButton { "Choose encoder" };
-    juce::TextButton decoderButton { "Choose decoder" };
+    juce::TextButton modelsButton { "Load models folder" };
+    juce::TextButton voiceAButton { "Voice A: empty" };
+    juce::TextButton voiceBButton { "Voice B: empty" };
 
     juce::Label statusLabel, latencyLabel;
 
-    juce::File encoderFile, decoderFile;
     std::unique_ptr<juce::FileChooser> chooser;
 
+    // Section geometry, computed in resized() and read by paint(). Hardcoding
+    // these was how the neural header ended up drawn on top of a knob.
+    int topDividerY    = 0;
+    int neuralHeaderY  = 0;
+    int footerDividerY = 0;
+
     std::unique_ptr<SliderAttachment> pitchAtt, formantAtt, genderAtt, detailAtt,
-                                      gateAtt, mixAtt, outputAtt, aiAmountAtt, aiSpeakerAtt;
+                                      gateAtt, mixAtt, outputAtt, aiAmountAtt, morphAtt;
     std::unique_ptr<ButtonAttachment> linkAtt, aiAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoiceMorphAudioProcessorEditor)
