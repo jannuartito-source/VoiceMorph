@@ -278,6 +278,24 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     addAndMakeVisible (linkButton);
     addAndMakeVisible (aiButton);
 
+    auto styleBox = [this] (juce::ComboBox& box, juce::Label& label, const juce::String& name)
+    {
+        box.setColour (juce::ComboBox::backgroundColourId, Palette::panel);
+        box.setColour (juce::ComboBox::textColourId,       Palette::text);
+        box.setColour (juce::ComboBox::outlineColourId,    Palette::rule);
+        box.setColour (juce::ComboBox::arrowColourId,      Palette::muted);
+        addAndMakeVisible (box);
+
+        label.setText (name, juce::dontSendNotification);
+        label.setFont (monoFont (9.0f, true));
+        label.setColour (juce::Label::textColourId, Palette::muted);
+        label.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (label);
+    };
+
+    styleBox (fftBox, fftBoxLabel, "VOCODER WINDOW");
+    styleBox (nnBox,  nnBoxLabel,  "NEURAL BLOCK");
+
     modelsButton.onClick = [this] { chooseModelFolder(); };
     voiceAButton.onClick = [this] { chooseReferenceVoice (0); };
     voiceBButton.onClick = [this] { chooseReferenceVoice (1); };
@@ -306,9 +324,11 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     aiAmountAtt = std::make_unique<SliderAttachment> (state, ParamID::aiAmount, aiAmountSlider);
     morphAtt    = std::make_unique<SliderAttachment> (state, ParamID::morph,    morphSlider);
     linkAtt     = std::make_unique<ButtonAttachment> (state, ParamID::link,     linkButton);
+    fftAtt      = std::make_unique<ComboAttachment>  (state, ParamID::fftMode,  fftBox);
+    nnAtt       = std::make_unique<ComboAttachment>  (state, ParamID::nnBlock,  nnBox);
     aiAtt       = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable, aiButton);
 
-    setSize (780, 600);
+    setSize (780, 620);
     startTimerHz (4);
 }
 
@@ -407,15 +427,32 @@ void VoiceMorphAudioProcessorEditor::timerCallback()
     const auto latencyMs = 1000.0 * processor.getLatencySamples()
                          / juce::jmax (1.0, processor.getSampleRate());
 
-    juce::String right = juce::String (latencyMs, 1) + " ms latency";
+    auto& neural = processor.getNeural();
 
-    if (processor.getNeural().isReady())
-        right += "   load " + juce::String (juce::roundToInt (processor.getNeural().getInferenceLoad() * 100.0f)) + "%";
+    juce::String right = juce::String (latencyMs, 1) + " ms";
+
+    bool stalled = false;
+
+    if (neural.isReady())
+    {
+        const int blocks = neural.getBlocksConverted();
+
+        // A load figure alone cannot distinguish "busy" from "died three
+        // minutes ago holding its last reading", so show the block count too.
+        right += "   load " + juce::String (juce::roundToInt (neural.getInferenceLoad() * 100.0f)) + "%"
+               + "   blk " + juce::String (blocks);
+
+        stalled = (blocks == lastBlockCount);
+        lastBlockCount = blocks;
+    }
 
     latencyLabel.setText (right, juce::dontSendNotification);
 
-    const bool overloaded = processor.getNeural().getInferenceLoad() > 0.95f;
-    latencyLabel.setColour (juce::Label::textColourId, overloaded ? Palette::warn : Palette::muted);
+    const bool trouble = stalled
+                      || neural.getInferenceLoad() > 0.95f
+                      || neural.getLastError().isNotEmpty();
+
+    latencyLabel.setColour (juce::Label::textColourId, trouble ? Palette::warn : Palette::muted);
 
     // Morphing only means anything with two voices to morph between.
     const bool bothLoaded = processor.getNeural().hasReferenceVoice (0)
@@ -481,7 +518,12 @@ void VoiceMorphAudioProcessorEditor::resized()
 
     // --- Utility row --------------------------------------------------------
     auto utility = area.removeFromTop (78);
-    linkButton.setBounds (utility.removeFromRight (196).withTrimmedTop (26).withHeight (20));
+
+    auto rightColumn = utility.removeFromRight (196);
+    linkButton.setBounds (rightColumn.removeFromTop (22).withTrimmedTop (2));
+    rightColumn.removeFromTop (8);
+    fftBoxLabel.setBounds (rightColumn.removeFromTop (12));
+    fftBox.setBounds (rightColumn.removeFromTop (24));
 
     const std::array<std::pair<juce::Slider*, juce::Label*>, 4> utilityControls {{
         { &detailSlider, &detailLabel },
@@ -510,7 +552,12 @@ void VoiceMorphAudioProcessorEditor::resized()
 
     neural.removeFromRight (12);
 
-    aiButton.setBounds (neural.removeFromTop (22));
+    auto enableRow = neural.removeFromTop (24);
+    auto nnCell    = enableRow.removeFromRight (150);
+    nnBoxLabel.setBounds (nnCell.removeFromLeft (86).withTrimmedTop (6));
+    nnBox.setBounds (nnCell);
+    aiButton.setBounds (enableRow.withTrimmedTop (2).withHeight (20));
+
     neural.removeFromTop (8);
 
     modelsButton.setBounds (neural.removeFromTop (26));

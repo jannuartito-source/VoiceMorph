@@ -177,6 +177,14 @@ void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMillisecond
 
 void NeuralVoiceConverter::reset()
 {
+    blocksConverted.store (0);
+    inferenceLoad.store (0.0f);
+
+    {
+        const juce::ScopedLock sl (errorLock);
+        lastError.clear();
+    }
+
     inputFifo.reset();
     outputFifo.reset();
 
@@ -246,9 +254,29 @@ void NeuralVoiceConverter::run()
     while (! threadShouldExit())
     {
         if (inputFifo.getNumReady() >= hopSize && outputFifo.getFreeSpace() >= hopSize)
-            processOneBlock();
+        {
+            // An exception escaping here would kill the worker outright. The
+            // audio thread would then find the FIFO permanently dry, fall back
+            // to the vocoder, and show no sign that anything had gone wrong.
+            try
+            {
+                processOneBlock();
+            }
+            catch (const std::exception& e)
+            {
+                reportError ("Worker: " + juce::String (e.what()));
+                wait (200);
+            }
+            catch (...)
+            {
+                reportError ("Worker: unknown exception");
+                wait (200);
+            }
+        }
         else
+        {
             wait (5);
+        }
     }
 }
 
@@ -300,6 +328,8 @@ void NeuralVoiceConverter::processOneBlock()
 
     inferenceLoad.store (0.9f * inferenceLoad.load()
                        + 0.1f * static_cast<float> (elapsed / juce::jmax (1.0, budget)));
+
+    blocksConverted.fetch_add (1);
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +536,10 @@ void NeuralVoiceConverter::runModel (const float* input, float* output, int numS
         }
 
         // 3. Decode content plus the blended identity vector.
-        const std::array<int64_t, 3> embShape { 1, static_cast<int64_t> (blendedEmbedding.size()), 1 };
+        //    Rank matters: FreeVC's generator appends the trailing axis itself,
+        //    so this stays 2-D. Sending [1, 256, 1] makes it 4-D inside and
+        //    conv1d rejects it.
+        const std::array<int64_t, 2> embShape { 1, static_cast<int64_t> (blendedEmbedding.size()) };
 
         std::array<Ort::Value, 2> decoderInputs {
             Ort::Value::CreateTensor<float> (impl->memory, contentData, contentCount,
@@ -537,7 +570,17 @@ void NeuralVoiceConverter::runModel (const float* input, float* output, int numS
     }
     catch (const Ort::Exception& e)
     {
-        juce::Logger::writeToLog ("VoiceMorph inference failed: " + juce::String (e.what()));
+        reportError ("ONNX: " + juce::String (e.what()));
+        std::copy (input, input + numSamples, output);
+    }
+    catch (const std::exception& e)
+    {
+        reportError ("Inference: " + juce::String (e.what()));
+        std::copy (input, input + numSamples, output);
+    }
+    catch (...)
+    {
+        reportError ("Inference: unknown exception");
         std::copy (input, input + numSamples, output);
     }
 #else
@@ -594,6 +637,26 @@ bool NeuralVoiceConverter::loadModels (const juce::File& folder, juce::String& e
     errorOut = "This build has no neural stage. Rebuild with the neural option turned on.";
     return false;
 #endif
+}
+
+void NeuralVoiceConverter::reportError (const juce::String& message)
+{
+    {
+        const juce::ScopedLock sl (errorLock);
+
+        if (lastError == message)
+            return;                       // do not spam an identical failure
+
+        lastError = message;
+    }
+
+    juce::Logger::writeToLog ("VoiceMorph: " + message);
+}
+
+juce::String NeuralVoiceConverter::getLastError() const
+{
+    const juce::ScopedLock sl (errorLock);
+    return lastError;
 }
 
 void NeuralVoiceConverter::unloadModels()

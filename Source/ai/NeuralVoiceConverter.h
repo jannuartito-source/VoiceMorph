@@ -90,6 +90,15 @@ public:
     int   getLatencySamples() const noexcept { return latencySamples; }
     float getInferenceLoad()  const noexcept { return inferenceLoad.load(); }
 
+    /** Last failure from the worker thread, empty if none. Inference runs off
+        the audio thread, so without this a thrown exception is invisible: the
+        plugin just quietly keeps passing the vocoder output through. */
+    juce::String getLastError() const;
+
+    /** Blocks successfully converted. A frozen counter with the enable box
+        ticked means the worker has stopped, which no other reading shows. */
+    int getBlocksConverted() const noexcept { return blocksConverted.load(); }
+
     /** True when there is enough loaded to actually convert: models plus at
         least one reference voice. */
     bool isReady() const noexcept;
@@ -136,7 +145,12 @@ private:
     std::atomic<float> morph         { 0.0f };
     std::atomic<float> pitchOffset   { 0.0f };
     std::atomic<float> inferenceLoad { 0.0f };
-    std::atomic<bool>  embeddingDirty { true };
+    std::atomic<bool>  embeddingDirty  { true };
+    std::atomic<int>   blocksConverted  { 0 };
+
+    juce::String          lastError;
+    juce::CriticalSection errorLock;
+    void reportError (const juce::String& message);
 
     juce::CriticalSection    modelLock;
     juce::AudioFormatManager formatManager;

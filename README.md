@@ -137,6 +137,15 @@ the old tape-speed effect. Useful for monsters, wrong for people.
 tracks narrower resonances but starts picking up the pitch harmonics, which
 sounds buzzy. Raise it for low voices, lower it for high ones.
 
+**Vocoder window** and **Neural block** trade latency against quality, and both
+recompute the engine when changed, so expect a brief gap in the audio.
+
+Total latency is the two added together, shown bottom right. The floor is about
+96 ms with both at their fastest, plus whatever the audio driver adds. Going
+below that needs a different neural architecture, not a smaller number: the
+content encoder has to hear enough speech to know what sound is being made, and
+starving it produces slurred, unstable output rather than fast output.
+
 **Gate** runs before the vocoder. Spectral processing divides by small numbers
 in quiet bins, so untreated room tone comes back as a metallic wash. Set the
 threshold just above your noise floor.
@@ -181,7 +190,7 @@ Put all three in one folder with exactly these names:
 |---|---|---|
 | `content.onnx` | Speech to phonetic frames, identity stripped | `[1, samples]` at 16 kHz in, `[1, frames, D]` out |
 | `speaker.onnx` | A few seconds of any voice to one identity vector | `[1, samples]` at 16 kHz in, `[1, 256]` out |
-| `decoder.onnx` | Frames plus identity back to speech | frames + `[1, 256, 1]` in, audio out |
+| `decoder.onnx` | Frames plus identity back to speech | frames + `[1, 256]` in, audio out |
 
 Then click **Load models folder**, then **Voice A**, and point it at any
 recording of the person you want to sound like. Five to fifteen seconds of

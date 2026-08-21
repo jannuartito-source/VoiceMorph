@@ -72,6 +72,7 @@ public:
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    using ComboAttachment  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void timerCallback() override;
     void styleRotary (juce::Slider&, juce::Label&, const juce::String& name, juce::Colour accent);
@@ -93,6 +94,9 @@ private:
     juce::ToggleButton linkButton { "Link formants to pitch" };
     juce::ToggleButton aiButton   { "Neural conversion" };
 
+    juce::ComboBox fftBox, nnBox;
+    juce::Label    fftBoxLabel, nnBoxLabel;
+
     juce::TextButton modelsButton { "Load models folder" };
     juce::TextButton voiceAButton { "Voice A: empty" };
     juce::TextButton voiceBButton { "Voice B: empty" };
@@ -103,6 +107,8 @@ private:
 
     // Section geometry, computed in resized() and read by paint(). Hardcoding
     // these was how the neural header ended up drawn on top of a knob.
+    int lastBlockCount = -1;
+
     int topDividerY    = 0;
     int neuralHeaderY  = 0;
     int footerDividerY = 0;
@@ -110,6 +116,7 @@ private:
     std::unique_ptr<SliderAttachment> pitchAtt, formantAtt, genderAtt, detailAtt,
                                       gateAtt, mixAtt, outputAtt, aiAmountAtt, morphAtt;
     std::unique_ptr<ButtonAttachment> linkAtt, aiAtt;
+    std::unique_ptr<ComboAttachment>  fftAtt, nnAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoiceMorphAudioProcessorEditor)
 };

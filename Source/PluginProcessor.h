@@ -20,6 +20,8 @@ namespace ParamID
     inline constexpr const char* aiEnable   = "aiEnable";
     inline constexpr const char* aiAmount   = "aiAmount";
     inline constexpr const char* morph      = "morph";
+    inline constexpr const char* fftMode    = "fftMode";
+    inline constexpr const char* nnBlock    = "nnBlock";
 }
 
 class VoiceMorphAudioProcessor : public juce::AudioProcessor,
@@ -72,6 +74,14 @@ private:
         the audio thread. processBlock only raises a flag. */
     void handleAsyncUpdate() override;
     void updateLatency();
+
+    /** Rebuilds the vocoder and the neural stage at new sizes. Both allocate,
+        so this only ever runs on the message thread under the callback lock. */
+    void applyQualitySettings();
+
+    int cachedFftMode = -1;
+    int cachedNnBlock = -1;
+    std::atomic<bool> reconfigurePending { false };
 
     std::atomic<bool> latencyNeedsUpdate { true };
 

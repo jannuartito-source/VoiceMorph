@@ -75,16 +75,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoiceMorphAudioProcessor::cr
         ParameterID { ParamID::morph, 1 }, "Voice morph",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
 
+    // Latency is almost entirely a choice, not a constraint. Both of these
+    // trade it against quality, and the honest place to make that trade is
+    // the user's ears rather than a constant in the source.
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { ParamID::fftMode, 1 }, "Vocoder window",
+        StringArray { "Fast (16 ms)", "Balanced (32 ms)", "Smooth (64 ms)" }, 1));
+
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { ParamID::nnBlock, 1 }, "Neural block",
+        StringArray { "80 ms", "120 ms", "200 ms", "320 ms" }, 1));
+
     return layout;
 }
 
 void VoiceMorphAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // 2048 at 48 kHz is the usual compromise: enough frequency resolution to
-    // separate formants from harmonics, short enough that consonants survive.
-    engine.prepare (sampleRate, 11, 4);
     gate.prepare (sampleRate);
-    neural.prepare (sampleRate, 200);
+    applyQualitySettings();
 
     const juce::dsp::ProcessSpec spec { sampleRate, static_cast<juce::uint32> (samplesPerBlock), 1 };
     dryDelay.prepare (spec);
@@ -110,8 +118,34 @@ void VoiceMorphAudioProcessor::releaseResources()
     engine.reset();
 }
 
+void VoiceMorphAudioProcessor::applyQualitySettings()
+{
+    // FFT order 10/11/12 -> 16/32/64 ms of vocoder latency at 48 kHz. Smaller
+    // windows resolve formants less precisely, which shows up as a slightly
+    // rougher timbre rather than as anything obviously broken.
+    static constexpr int orders[]   = { 10, 11, 12 };
+    static constexpr int blockMs[]  = { 80, 120, 200, 320 };
+
+    const int fftChoice = static_cast<int> (apvts.getRawParameterValue (ParamID::fftMode)->load());
+    const int nnChoice  = static_cast<int> (apvts.getRawParameterValue (ParamID::nnBlock)->load());
+
+    const double rate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+
+    engine.prepare (rate, orders[juce::jlimit (0, 2, fftChoice)], 4);
+    neural.prepare (rate, blockMs[juce::jlimit (0, 3, nnChoice)]);
+
+    cachedFftMode = fftChoice;
+    cachedNnBlock = nnChoice;
+}
+
 void VoiceMorphAudioProcessor::handleAsyncUpdate()
 {
+    if (reconfigurePending.exchange (false))
+    {
+        const juce::ScopedLock sl (getCallbackLock());
+        applyQualitySettings();
+    }
+
     updateLatency();
 }
 
@@ -167,8 +201,18 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const float aiAmtParam   = apvts.getRawParameterValue (ParamID::aiAmount)->load();
     const float morphParam   = apvts.getRawParameterValue (ParamID::morph)->load();
 
-    if (getLatencySamples() != engine.getLatencySamples() + (aiOn ? neural.getLatencySamples() : 0))
+    const int fftChoice = static_cast<int> (apvts.getRawParameterValue (ParamID::fftMode)->load());
+    const int nnChoice  = static_cast<int> (apvts.getRawParameterValue (ParamID::nnBlock)->load());
+
+    if (fftChoice != cachedFftMode || nnChoice != cachedNnBlock)
+    {
+        reconfigurePending.store (true);
         triggerAsyncUpdate();
+    }
+    else if (getLatencySamples() != engine.getLatencySamples() + (aiOn ? neural.getLatencySamples() : 0))
+    {
+        triggerAsyncUpdate();
+    }
 
     engine.setPitchSemitones   (pitchParam   + genderParam * kGenderPitchRange);
     engine.setFormantSemitones (formantParam + genderParam * kGenderFormantRange);
@@ -281,6 +325,13 @@ juce::String VoiceMorphAudioProcessor::getStatusMessage() const
 
     if (! neural.isReady())
         return "Models loaded. Load a reference voice to convert.";
+
+    // A failure on the worker thread is otherwise silent: the plugin keeps
+    // producing perfectly good vocoder output and nothing looks wrong.
+    const auto error = neural.getLastError();
+
+    if (error.isNotEmpty())
+        return error;
 
     return statusMessage;
 }
