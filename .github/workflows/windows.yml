@@ -64,18 +64,30 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          # Note: do not name this $args. That is a PowerShell automatic
-          # variable, and splatting it silently passes nothing to cmake.
-          $cmakeArgs = @(
-            '-B', 'build',
-            '-G', 'Visual Studio 17 2022',
-            '-A', 'x64',
-            '-DVM_COPY_PLUGIN=OFF'
-          )
+          cmake --version
+
+          # Do not hardcode the Visual Studio version. GitHub rolls the runner
+          # image forward -- it ships VS 2026 now -- and a pinned generator
+          # breaks the moment they do. Ask CMake which one is actually here.
+          $cmakeArgs = @('-B', 'build', '-DVM_COPY_PLUGIN=OFF')
+
+          $line = cmake --help |
+                  Select-String -Pattern '^\*\s+(Visual Studio \d+ \d+)' |
+                  Select-Object -First 1
+
+          if ($line) {
+            $generator = $line.Matches[0].Groups[1].Value
+            Write-Host "Using generator: $generator"
+            $cmakeArgs += @('-G', $generator, '-A', 'x64')
+          } else {
+            Write-Host "No Visual Studio generator found, falling back to the CMake default"
+          }
+
           if ('${{ steps.neural.outputs.enabled }}' -eq 'true') {
             $cmakeArgs += '-DVM_ENABLE_ONNX=ON'
             $cmakeArgs += "-DVM_ONNXRUNTIME_ROOT=$env:ORT_ROOT"
           }
+
           Write-Host "Running: cmake $($cmakeArgs -join ' ')"
           cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
