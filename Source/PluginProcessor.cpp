@@ -1,21 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-namespace
-{
-    /** How far the gender macro pushes each axis at full travel.
-
-        These are not arbitrary. Adult male and female speaking f0 differ by
-        roughly an octave in the extremes but more typically a fifth, and the
-        vocal tract length difference works out near 15 %, which is about four
-        semitones of formant shift. Pushing formants harder than pitch is what
-        makes the macro read as "different person" rather than "same person,
-        different note".
-    */
-    constexpr float kGenderPitchRange   = 7.0f;   // semitones
-    constexpr float kGenderFormantRange = 4.0f;   // semitones
-}
-
 VoiceMorphAudioProcessor::VoiceMorphAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -86,6 +71,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoiceMorphAudioProcessor::cr
         ParameterID { ParamID::nnBlock, 1 }, "Neural block",
         StringArray { "80 ms", "120 ms", "200 ms", "320 ms" }, 1));
 
+    // Halves the context window. Less speech for the encoder to work with,
+    // but a third off the inference bill and no change to latency.
     layout.add (std::make_unique<AudioParameterBool> (
         ParameterID { ParamID::nnLight, 1 }, "CPU saver", false));
 
@@ -137,7 +124,7 @@ void VoiceMorphAudioProcessor::applyQualitySettings()
     const int light = apvts.getRawParameterValue (ParamID::nnLight)->load() > 0.5f ? 1 : 0;
 
     engine.prepare (rate, orders[juce::jlimit (0, 2, fftChoice)], 4);
-    neural.prepare (rate, blockMs[juce::jlimit (0, 3, nnChoice)], light ? 25 : 50);
+    neural.prepare (rate, blockMs[juce::jlimit (0, 3, nnChoice)], light ? 50 : 100);
 
     cachedFftMode = fftChoice;
     cachedNnBlock = nnChoice;
@@ -222,8 +209,8 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         triggerAsyncUpdate();
     }
 
-    engine.setPitchSemitones   (pitchParam   + genderParam * kGenderPitchRange);
-    engine.setFormantSemitones (formantParam + genderParam * kGenderFormantRange);
+    engine.setPitchSemitones   (pitchParam   + genderParam * GenderMacro::pitchRange);
+    engine.setFormantSemitones (formantParam + genderParam * GenderMacro::formantRange);
     engine.setLinkFormantsToPitch (linkParam);
     engine.setEnvelopeDetail (detailParam);
 
@@ -231,7 +218,7 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
     neural.setEnabled (aiOn);
     neural.setMorph (morphParam);
-    neural.setPitchOffsetSemitones (pitchParam + genderParam * kGenderPitchRange);
+    neural.setPitchOffsetSemitones (pitchParam + genderParam * GenderMacro::pitchRange);
 
     mixSmoothed.setTargetValue (mixParam);
     outputSmoothed.setTargetValue (juce::Decibels::decibelsToGain (outParam));

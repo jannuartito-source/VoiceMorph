@@ -249,9 +249,13 @@ than like a crash.
   keep up, the FIFO drains, and the plugin silently falls back to the vocoder
   output — audible as a sudden change of character, not a dropout.
 - **Block independence.** Consecutive blocks are generated without knowledge
-  of each other, so their phase need not agree and the crossfade can comb
-  faintly. Conditioning the decoder on the previous block's state is the
-  proper fix and a substantial piece of work.
+  of each other. A neural vocoder invents phase, so two calls covering the same
+  audio agree on content and disagree on phase — which is why the stage keeps
+  only the newest hop from each call and crossfades a 5 ms seam, rather than
+  overlap-adding. Overlap-adding two independently phased renders sums two
+  uncorrelated signals and collapses correlation with the intended waveform to
+  around 0.58: audibly, noise. Conditioning the decoder on the previous block's
+  state would remove the seam entirely, and is a substantial piece of work.
 - **No f0 tracking yet.** Pitch comes from the vocoder stage upstream rather
   than being handed to the decoder. For models that accept an f0 input this
   leaves quality on the table.

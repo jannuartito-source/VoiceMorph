@@ -44,11 +44,14 @@ public:
     NeuralVoiceConverter();
     ~NeuralVoiceConverter() override;
 
-    /** @param overlapPercent  how much of each block is reprocessed. 50 is
-                                smoothest; 25 cuts CPU by a third for the same
-                                latency, at the cost of harder block seams. */
-    void prepare (double hostSampleRate, int blockSizeMilliseconds = 200,
-                  int overlapPercent = 50);
+    /** @param hopMilliseconds  how much new audio each inference produces.
+                                 This alone sets latency.
+        @param contextPercent    how much *past* audio is prepended, as a
+                                 percentage of the hop. Context costs CPU and
+                                 improves quality but adds no latency, because
+                                 it is audio that already went by. */
+    void prepare (double hostSampleRate, int hopMilliseconds = 120,
+                  int contextPercent = 100);
     void reset();
     void releaseResources();
 
@@ -124,15 +127,17 @@ private:
     void buildBlendedEmbedding();
 
     double hostRate       = 48000.0;
-    int    blockSize      = 9600;
-    int    hopSize        = 4800;
-    int    latencySamples = 9600;
+    int    hopSize        = 5760;   // new audio per inference; sets latency
+    int    contextSamples = 5760;   // past audio prepended for quality, free
+    int    modelWindow    = 11520;  // context + hop, what the model actually sees
+    int    fadeSamples    = 240;    // 5 ms seam between consecutive outputs
+    int    latencySamples = 6000;
 
     juce::AbstractFifo inputFifo  { 1 };
     juce::AbstractFifo outputFifo { 1 };
     std::vector<float> inputStore, outputStore;
 
-    std::vector<float> history, workBuffer, modelOutput, overlapAccum, fadeWindow, emitBuffer;
+    std::vector<float> history, workBuffer, modelOutput, prevTail, fadeCurve, emitBuffer;
 
     struct Reference
     {

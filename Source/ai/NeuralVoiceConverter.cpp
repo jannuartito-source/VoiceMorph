@@ -141,67 +141,52 @@ juce::String NeuralVoiceConverter::getReferenceName (int slot) const
 
 // ---------------------------------------------------------------------------
 
-void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMilliseconds,
-                                    int overlapPercent)
+void NeuralVoiceConverter::prepare (double newHostRate, int hopMilliseconds,
+                                    int contextPercent)
 {
     releaseResources();
 
     hostRate = newHostRate;
 
-    const int requested = static_cast<int> (newHostRate * blockSizeMilliseconds / 1000.0);
+    const int requested = static_cast<int> (newHostRate * hopMilliseconds / 1000.0);
 
-    blockSize = juce::jmax (256, requested + (requested & 1));
+    hopSize        = juce::jmax (256, requested + (requested & 1));
+    contextSamples = juce::jmax (0, hopSize * juce::jlimit (0, 400, contextPercent) / 100);
+    modelWindow    = contextSamples + hopSize;
 
-    const int overlap = juce::jlimit (10, 50, overlapPercent);
-    hopSize = juce::jlimit (64, blockSize - 64, blockSize * (100 - overlap) / 100);
-    hopSize -= hopSize & 1;
+    // 5 ms seam. Long enough to hide a phase discontinuity, short enough that
+    // the two renders being blended are never both audible for long.
+    fadeSamples    = juce::jlimit (16, hopSize / 4, static_cast<int> (newHostRate * 0.005));
 
-    latencySamples = blockSize;
+    latencySamples = hopSize + fadeSamples;
 
-    const int fifoCapacity = blockSize * 8;
+    const int fifoCapacity = juce::jmax (modelWindow, hopSize * 8);
 
     inputStore.assign  (static_cast<size_t> (fifoCapacity), 0.0f);
     outputStore.assign (static_cast<size_t> (fifoCapacity), 0.0f);
     inputFifo.setTotalSize  (fifoCapacity);
     outputFifo.setTotalSize (fifoCapacity);
 
-    history.assign      (static_cast<size_t> (hopSize),   0.0f);
-    workBuffer.assign   (static_cast<size_t> (blockSize), 0.0f);
-    modelOutput.assign  (static_cast<size_t> (blockSize), 0.0f);
-    overlapAccum.assign (static_cast<size_t> (blockSize), 0.0f);
-    emitBuffer.assign   (static_cast<size_t> (hopSize),   0.0f);
+    history.assign     (static_cast<size_t> (juce::jmax (1, contextSamples)), 0.0f);
+    workBuffer.assign  (static_cast<size_t> (modelWindow), 0.0f);
+    modelOutput.assign (static_cast<size_t> (modelWindow), 0.0f);
+    prevTail.assign    (static_cast<size_t> (fadeSamples), 0.0f);
+    emitBuffer.assign  (static_cast<size_t> (hopSize), 0.0f);
 
-    // Trapezoid: a sin-squared fade in, a flat middle, a cos-squared fade out.
-    // Adjacent copies sum to exactly one at any hop, because sin^2 + cos^2 = 1.
-    // At 50 % overlap the flat part vanishes and this reduces to a Hann.
-    const int fade = blockSize - hopSize;
+    // Linear crossfade, so the two weights sum to exactly one.
+    //
+    // Equal-power is the usual reflex here and it is wrong for this seam: the
+    // two renders share content, so where they agree an equal-power blend adds
+    // up to 3 dB. A convex combination can never exceed either input, and when
+    // the renders do agree it reconstructs them exactly.
+    fadeCurve.resize (static_cast<size_t> (fadeSamples));
+    for (int n = 0; n < fadeSamples; ++n)
+        fadeCurve[static_cast<size_t> (n)] =
+            (static_cast<float> (n) + 0.5f) / static_cast<float> (fadeSamples);
 
-    fadeWindow.resize (static_cast<size_t> (blockSize));
-
-    for (int n = 0; n < blockSize; ++n)
-    {
-        float w = 1.0f;
-
-        if (n < fade)
-        {
-            const float s = std::sin (0.5f * juce::MathConstants<float>::pi
-                                      * (static_cast<float> (n) + 0.5f) / static_cast<float> (fade));
-            w = s * s;
-        }
-        else if (n >= hopSize)
-        {
-            const int mirrored = blockSize - 1 - n;
-            const float s = std::sin (0.5f * juce::MathConstants<float>::pi
-                                      * (static_cast<float> (mirrored) + 0.5f) / static_cast<float> (fade));
-            w = s * s;
-        }
-
-        fadeWindow[static_cast<size_t> (n)] = w;
-    }
-
-    const int modelBlock = static_cast<int> (std::ceil (blockSize * kModelSampleRate / hostRate)) + 64;
+    const int modelBlock = static_cast<int> (std::ceil (modelWindow * kModelSampleRate / hostRate)) + 512;
     impl->modelRateIn.assign  (static_cast<size_t> (modelBlock), 0.0f);
-    impl->modelRateOut.assign (static_cast<size_t> (modelBlock), 0.0f);
+    impl->modelRateOut.assign (static_cast<size_t> (modelBlock * 4), 0.0f);
 
     reset();
     startThread (juce::Thread::Priority::high);
@@ -220,9 +205,9 @@ void NeuralVoiceConverter::reset()
     inputFifo.reset();
     outputFifo.reset();
 
-    std::fill (history.begin(),      history.end(),      0.0f);
-    std::fill (overlapAccum.begin(), overlapAccum.end(), 0.0f);
-    std::fill (outputStore.begin(),  outputStore.end(),  0.0f);
+    std::fill (history.begin(),     history.end(),     0.0f);
+    std::fill (prevTail.begin(),    prevTail.end(),    0.0f);
+    std::fill (outputStore.begin(), outputStore.end(), 0.0f);
 
     impl->downsampler.reset();
     impl->upsampler.reset();
@@ -316,13 +301,17 @@ void NeuralVoiceConverter::processOneBlock()
 {
     const auto startTime = juce::Time::getMillisecondCounterHiRes();
 
-    std::copy (history.begin(), history.end(), workBuffer.begin());
+    // Window = past context, then the fresh hop. The context is audio that has
+    // already been emitted; it is here only so the content encoder has enough
+    // speech to recognise, and it costs no latency at all.
+    if (contextSamples > 0)
+        std::copy (history.begin(), history.end(), workBuffer.begin());
 
     {
         int start1, size1, start2, size2;
         inputFifo.prepareToRead (hopSize, start1, size1, start2, size2);
 
-        auto* dest = workBuffer.data() + hopSize;
+        auto* dest = workBuffer.data() + contextSamples;
 
         if (size1 > 0) std::copy (inputStore.begin() + start1, inputStore.begin() + start1 + size1, dest);
         if (size2 > 0) std::copy (inputStore.begin() + start2, inputStore.begin() + start2 + size2, dest + size1);
@@ -330,20 +319,40 @@ void NeuralVoiceConverter::processOneBlock()
         inputFifo.finishedRead (size1 + size2);
     }
 
-    std::copy (workBuffer.begin() + hopSize, workBuffer.end(), history.begin());
+    if (contextSamples > 0)
+        std::copy (workBuffer.end() - contextSamples, workBuffer.end(), history.begin());
 
     if (embeddingDirty.exchange (false))
         buildBlendedEmbedding();
 
-    runModel (workBuffer.data(), modelOutput.data(), blockSize);
+    runModel (workBuffer.data(), modelOutput.data(), modelWindow);
 
-    for (int n = 0; n < blockSize; ++n)
-        overlapAccum[static_cast<size_t> (n)] +=
-            modelOutput[static_cast<size_t> (n)] * fadeWindow[static_cast<size_t> (n)];
+    // Crossfade, not overlap-add.
+    //
+    // A neural vocoder invents phase. Two calls covering the same audio agree
+    // on content and disagree completely on phase, so summing them under a
+    // Hann window is summing two uncorrelated signals: correlation with the
+    // intended waveform collapses and what comes out is noise. Only the newest
+    // hop is kept, and the single sample-level seam is smoothed over 5 ms.
+    const int emitStart = contextSamples - fadeSamples;
 
-    std::copy (overlapAccum.begin(), overlapAccum.begin() + hopSize, emitBuffer.begin());
-    std::copy (overlapAccum.begin() + hopSize, overlapAccum.end(), overlapAccum.begin());
-    std::fill (overlapAccum.begin() + hopSize, overlapAccum.end(), 0.0f);
+    for (int n = 0; n < fadeSamples; ++n)
+    {
+        const float rising  = fadeCurve[static_cast<size_t> (n)];
+        const float falling = 1.0f - rising;
+
+        emitBuffer[static_cast<size_t> (n)] =
+              prevTail[static_cast<size_t> (n)] * falling
+            + modelOutput[static_cast<size_t> (emitStart + n)] * rising;
+    }
+
+    std::copy (modelOutput.begin() + contextSamples,
+               modelOutput.begin() + contextSamples + hopSize - fadeSamples,
+               emitBuffer.begin() + fadeSamples);
+
+    std::copy (modelOutput.begin() + contextSamples + hopSize - fadeSamples,
+               modelOutput.begin() + contextSamples + hopSize,
+               prevTail.begin());
 
     {
         int start1, size1, start2, size2;
@@ -540,6 +549,12 @@ void NeuralVoiceConverter::runModel (const float* input, float* output, int numS
     try
     {
         // 1. Host rate down to the model's rate.
+        //    Reset first: consecutive windows overlap, so a resampler that
+        //    kept its last four samples would be filtering against audio it
+        //    has already seen, smearing the join on every single block.
+        impl->downsampler.reset();
+        impl->upsampler.reset();
+
         const int numModelIn = resample (impl->downsampler, input, numSamples,
                                          impl->modelRateIn.data(),
                                          static_cast<int> (impl->modelRateIn.size()),
@@ -588,17 +603,46 @@ void NeuralVoiceConverter::runModel (const float* input, float* output, int numS
         auto* outData = audioOut.front().GetTensorMutableData<float>();
         const auto numModelOut = static_cast<int> (audioOut.front().GetTensorTypeAndShapeInfo().GetElementCount());
 
-        // 4. Back up to the host rate. The generator's output rate is derived
-        //    from the sample count rather than assumed, so 16k, 24k and 48k
-        //    decoders all work without a setting.
-        const double producedRate = kModelSampleRate * static_cast<double> (numModelOut)
-                                                     / juce::jmax (1.0, static_cast<double> (numModelIn));
+        // 4. Back up to the host rate.
+        //
+        //    The naive move is to divide output samples by input samples and
+        //    call that the rate. It is not: the encoder's convolution stack
+        //    swallows a few hundred samples at the tail, so that ratio comes
+        //    out a few percent low and the audio gets stretched, block after
+        //    block. Snap to the nearest real rate instead and let the deficit
+        //    be what it is.
+        static constexpr double knownRates[] = { 16000.0, 22050.0, 24000.0,
+                                                 32000.0, 44100.0, 48000.0 };
 
-        const int written = resample (impl->upsampler, outData, numModelOut,
-                                      output, numSamples, producedRate, hostRate);
+        const double ratio = static_cast<double> (numModelOut)
+                           / juce::jmax (1.0, static_cast<double> (numModelIn));
 
-        if (written < numSamples)
-            std::fill (output + written, output + numSamples, 0.0f);
+        double producedRate = knownRates[0];
+        double bestDistance = std::abs (kModelSampleRate * ratio - knownRates[0]);
+
+        for (auto candidate : knownRates)
+        {
+            const auto distance = std::abs (kModelSampleRate * ratio - candidate);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                producedRate = candidate;
+            }
+        }
+
+        const int capacity = static_cast<int> (impl->modelRateOut.size());
+        const int produced = resample (impl->upsampler, outData, numModelOut,
+                                       impl->modelRateOut.data(), capacity,
+                                       producedRate, hostRate);
+
+        // Pad rather than resample away the encoder's tail deficit: the last
+        // few milliseconds land inside the next window's context anyway.
+        const int copied = juce::jmin (produced, numSamples);
+        std::copy (impl->modelRateOut.begin(), impl->modelRateOut.begin() + copied, output);
+
+        if (copied < numSamples)
+            std::fill (output + copied, output + numSamples, 0.0f);
     }
     catch (const Ort::Exception& e)
     {

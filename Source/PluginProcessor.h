@@ -25,6 +25,20 @@ namespace ParamID
     inline constexpr const char* nnLight    = "nnLight";
 }
 
+/** How far the gender macro pushes each axis at full travel.
+
+    These are not arbitrary. Male and female speaking pitch typically differ by
+    around a fifth, while the vocal tract length difference is nearer 15 %,
+    which works out at about four semitones of formant shift. The formant range
+    is deliberately the smaller of the two -- overshooting it is what turns a
+    convincing transformation into a cartoon.
+*/
+namespace GenderMacro
+{
+    inline constexpr float pitchRange   = 7.0f;   // semitones at full travel
+    inline constexpr float formantRange = 4.0f;
+}
+
 class VoiceMorphAudioProcessor : public juce::AudioProcessor,
                                  private juce::AsyncUpdater
 {

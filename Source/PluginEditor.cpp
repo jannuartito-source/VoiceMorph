@@ -262,6 +262,15 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     genderLabel.setColour (juce::Label::textColourId, Palette::muted);
     addAndMakeVisible (genderLabel);
 
+    // A bare slider position means nothing here. What the reader needs is the
+    // two numbers it is actually driving.
+    genderReadout.setJustificationType (juce::Justification::centred);
+    genderReadout.setFont (monoFont (10.5f));
+    genderReadout.setColour (juce::Label::textColourId, Palette::text);
+    addAndMakeVisible (genderReadout);
+
+    genderSlider.onValueChange = [this] { updateGenderReadout(); };
+
     // The morph slider is the whole Vocoflex idea in one control: identity is
     // a vector, so you can stand between two of them.
     morphSlider.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -339,7 +348,9 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     nnAtt       = std::make_unique<ComboAttachment>  (state, ParamID::nnBlock,  nnBox);
     aiAtt       = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable, aiButton);
 
-    setSize (780, 620);
+    updateGenderReadout();
+
+    setSize (780, 640);
     startTimerHz (4);
 }
 
@@ -415,6 +426,26 @@ void VoiceMorphAudioProcessorEditor::chooseReferenceVoice (int slot)
     });
 }
 
+void VoiceMorphAudioProcessorEditor::updateGenderReadout()
+{
+    const auto value = static_cast<float> (genderSlider.getValue());
+
+    const auto pitch   = value * GenderMacro::pitchRange;
+    const auto formant = value * GenderMacro::formantRange;
+
+    auto signed2 = [] (float v)
+    {
+        return juce::String (v >= 0.0f ? "+" : "") + juce::String (v, 2);
+    };
+
+    genderReadout.setText (signed2 (value) + "    pitch " + signed2 (pitch)
+                               + " st    formant " + signed2 (formant) + " st",
+                           juce::dontSendNotification);
+
+    genderReadout.setColour (juce::Label::textColourId,
+                             std::abs (value) < 0.005f ? Palette::muted : Palette::source);
+}
+
 void VoiceMorphAudioProcessorEditor::refreshVoiceButtons()
 {
     auto& neural = processor.getNeural();
@@ -444,7 +475,9 @@ void VoiceMorphAudioProcessorEditor::timerCallback()
 
     bool stalled = false;
 
-    if (neural.isReady())
+    const bool neuralOn = processor.apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f;
+
+    if (neural.isReady() && neuralOn)
     {
         const int blocks = neural.getBlocksConverted();
 
@@ -455,6 +488,12 @@ void VoiceMorphAudioProcessorEditor::timerCallback()
 
         stalled = (blocks == lastBlockCount);
         lastBlockCount = blocks;
+    }
+    else
+    {
+        // Leaving the last reading on screen made a switched-off stage look
+        // like a running one.
+        lastBlockCount = -1;
     }
 
     latencyLabel.setText (right, juce::dontSendNotification);
@@ -521,9 +560,10 @@ void VoiceMorphAudioProcessorEditor::resized()
     area.removeFromTop (14);
 
     // --- Gender macro -------------------------------------------------------
-    auto macro = area.removeFromTop (44);
+    auto macro = area.removeFromTop (62);
     genderLabel.setBounds (macro.removeFromTop (14));
-    genderSlider.setBounds (macro.reduced (60, 4));
+    genderSlider.setBounds (macro.removeFromTop (26).reduced (60, 4));
+    genderReadout.setBounds (macro.removeFromTop (16));
 
     area.removeFromTop (10);
 

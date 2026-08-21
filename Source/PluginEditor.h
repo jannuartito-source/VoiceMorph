@@ -79,6 +79,7 @@ private:
     void chooseModelFolder();
     void chooseReferenceVoice (int slot);
     void refreshVoiceButtons();
+    void updateGenderReadout();
 
     VoiceMorphAudioProcessor& processor;
     InstrumentLookAndFeel     lookAndFeel;
@@ -88,6 +89,7 @@ private:
     juce::Slider pitchSlider, formantSlider, genderSlider, detailSlider,
                  gateSlider, mixSlider, outputSlider, aiAmountSlider, morphSlider;
 
+    juce::Label genderReadout;
     juce::Label pitchLabel, formantLabel, genderLabel, detailLabel,
                 gateLabel, mixLabel, outputLabel, aiAmountLabel, morphLabel;
 
