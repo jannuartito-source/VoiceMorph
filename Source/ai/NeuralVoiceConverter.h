@@ -131,6 +131,7 @@ private:
     int    contextSamples = 5760;   // past audio prepended for quality, free
     int    modelWindow    = 11520;  // context + hop, what the model actually sees
     int    fadeSamples    = 240;    // 5 ms seam between consecutive outputs
+    int    tailTrim       = 960;    // discard the encoder's ragged tail
     int    latencySamples = 6000;
 
     juce::AbstractFifo inputFifo  { 1 };

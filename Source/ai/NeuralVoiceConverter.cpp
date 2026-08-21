@@ -158,7 +158,16 @@ void NeuralVoiceConverter::prepare (double newHostRate, int hopMilliseconds,
     // the two renders being blended are never both audible for long.
     fadeSamples    = juce::jlimit (16, hopSize / 4, static_cast<int> (newHostRate * 0.005));
 
-    latencySamples = hopSize + fadeSamples;
+    // The content encoder's convolution stack has a 400-sample receptive field
+    // at 16 kHz, so it cannot produce output for the last 400 samples of its
+    // input: the window simply runs out. That is a fixed 20 ms hole at the end
+    // of every decoded window, whatever the window length. Reading right up to
+    // the edge is how a hop ends in silence sixteen percent of the time. Back
+    // the emitted region off by more than the hole and read only valid audio.
+    tailTrim = juce::jlimit (0, juce::jmax (0, contextSamples - fadeSamples),
+                             static_cast<int> (newHostRate * 0.030));
+
+    latencySamples = hopSize + fadeSamples + tailTrim;
 
     const int fifoCapacity = juce::jmax (modelWindow, hopSize * 8);
 
@@ -334,7 +343,7 @@ void NeuralVoiceConverter::processOneBlock()
     // Hann window is summing two uncorrelated signals: correlation with the
     // intended waveform collapses and what comes out is noise. Only the newest
     // hop is kept, and the single sample-level seam is smoothed over 5 ms.
-    const int emitStart = contextSamples - fadeSamples;
+    const int emitStart = contextSamples - fadeSamples - tailTrim;
 
     for (int n = 0; n < fadeSamples; ++n)
     {
@@ -346,12 +355,12 @@ void NeuralVoiceConverter::processOneBlock()
             + modelOutput[static_cast<size_t> (emitStart + n)] * rising;
     }
 
-    std::copy (modelOutput.begin() + contextSamples,
-               modelOutput.begin() + contextSamples + hopSize - fadeSamples,
+    std::copy (modelOutput.begin() + contextSamples - tailTrim,
+               modelOutput.begin() + contextSamples + hopSize - fadeSamples - tailTrim,
                emitBuffer.begin() + fadeSamples);
 
-    std::copy (modelOutput.begin() + contextSamples + hopSize - fadeSamples,
-               modelOutput.begin() + contextSamples + hopSize,
+    std::copy (modelOutput.begin() + contextSamples + hopSize - fadeSamples - tailTrim,
+               modelOutput.begin() + contextSamples + hopSize - tailTrim,
                prevTail.begin());
 
     {
@@ -642,7 +651,18 @@ void NeuralVoiceConverter::runModel (const float* input, float* output, int numS
         std::copy (impl->modelRateOut.begin(), impl->modelRateOut.begin() + copied, output);
 
         if (copied < numSamples)
+        {
             std::fill (output + copied, output + numSamples, 0.0f);
+
+            // The emitted region stops tailTrim samples short of the end, so a
+            // normal shortfall never reaches the listener. If it does, say so
+            // rather than quietly stuttering.
+            const int required = contextSamples + hopSize - tailTrim;
+
+            if (copied < required)
+                reportError ("Decoder returned " + juce::String (copied) + " of "
+                             + juce::String (required) + " samples needed. Increase the neural block.");
+        }
     }
     catch (const Ort::Exception& e)
     {

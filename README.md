@@ -256,6 +256,13 @@ than like a crash.
   uncorrelated signals and collapses correlation with the intended waveform to
   around 0.58: audibly, noise. Conditioning the decoder on the previous block's
   state would remove the seam entirely, and is a substantial piece of work.
+- **The encoder's tail hole.** WavLM's convolution stack has a 400-sample
+  receptive field at 16 kHz, so it produces no output for the last 400 samples
+  of any window — a fixed 20 ms gap at the end of every decode, regardless of
+  window length. The emitted region is backed off 30 ms from the edge so it
+  never reads into it. Reading right up to the edge puts a 20 ms silence at the
+  end of every hop, which at a 120 ms hop is an 8 Hz stutter.
+
 - **No f0 tracking yet.** Pitch comes from the vocoder stage upstream rather
   than being handed to the decoder. For models that accept an f0 input this
   leaves quality on the table.
