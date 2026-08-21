@@ -137,6 +137,17 @@ the old tape-speed effect. Useful for monsters, wrong for people.
 tracks narrower resonances but starts picking up the pitch harmonics, which
 sounds buzzy. Raise it for low voices, lower it for high ones.
 
+**CPU saver** drops the neural overlap from 50 % to 25 %. Each input sample is
+then reprocessed 1.33 times instead of twice, so inference cost falls by about
+a third with no change to latency. Block seams get slightly harder, which shows
+up as faint periodic texture on sustained vowels.
+
+If the load figure sits above 100 %, the fix is counterintuitive: **make the
+neural block bigger, not smaller.** Each run has a fixed overhead, so short
+blocks pay it more often. Load falls roughly as that overhead is amortised
+across a longer window, and 320 ms costs far less CPU per second of audio than
+80 ms does.
+
 **Vocoder window** and **Neural block** trade latency against quality, and both
 recompute the engine when changed, so expect a brief gap in the audio.
 

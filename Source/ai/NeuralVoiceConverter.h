@@ -44,7 +44,11 @@ public:
     NeuralVoiceConverter();
     ~NeuralVoiceConverter() override;
 
-    void prepare (double hostSampleRate, int blockSizeMilliseconds = 200);
+    /** @param overlapPercent  how much of each block is reprocessed. 50 is
+                                smoothest; 25 cuts CPU by a third for the same
+                                latency, at the cost of harder block seams. */
+    void prepare (double hostSampleRate, int blockSizeMilliseconds = 200,
+                  int overlapPercent = 50);
     void reset();
     void releaseResources();
 
@@ -128,7 +132,7 @@ private:
     juce::AbstractFifo outputFifo { 1 };
     std::vector<float> inputStore, outputStore;
 
-    std::vector<float> history, workBuffer, modelOutput, overlapAccum, hannWindow, emitBuffer;
+    std::vector<float> history, workBuffer, modelOutput, overlapAccum, fadeWindow, emitBuffer;
 
     struct Reference
     {

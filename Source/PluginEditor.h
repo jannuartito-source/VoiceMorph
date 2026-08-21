@@ -92,7 +92,8 @@ private:
                 gateLabel, mixLabel, outputLabel, aiAmountLabel, morphLabel;
 
     juce::ToggleButton linkButton { "Link formants to pitch" };
-    juce::ToggleButton aiButton   { "Neural conversion" };
+    juce::ToggleButton aiButton    { "Neural conversion" };
+    juce::ToggleButton lightButton { "CPU saver" };
 
     juce::ComboBox fftBox, nnBox;
     juce::Label    fftBoxLabel, nnBoxLabel;
@@ -115,7 +116,7 @@ private:
 
     std::unique_ptr<SliderAttachment> pitchAtt, formantAtt, genderAtt, detailAtt,
                                       gateAtt, mixAtt, outputAtt, aiAmountAtt, morphAtt;
-    std::unique_ptr<ButtonAttachment> linkAtt, aiAtt;
+    std::unique_ptr<ButtonAttachment> linkAtt, aiAtt, lightAtt;
     std::unique_ptr<ComboAttachment>  fftAtt, nnAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoiceMorphAudioProcessorEditor)

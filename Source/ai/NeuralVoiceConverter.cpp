@@ -78,7 +78,11 @@ struct NeuralVoiceConverter::Impl
 
     Impl()
     {
-        options.SetIntraOpNumThreads (2);
+        // Two threads was leaving most of the machine idle while the audio
+        // thread starved. WavLM-Large is the expensive part and parallelises
+        // well across cores.
+        options.SetIntraOpNumThreads (juce::jlimit (2, 8, juce::SystemStats::getNumCpus() - 1));
+        options.SetInterOpNumThreads (1);
         options.SetGraphOptimizationLevel (GraphOptimizationLevel::ORT_ENABLE_ALL);
     }
 #endif
@@ -137,7 +141,8 @@ juce::String NeuralVoiceConverter::getReferenceName (int slot) const
 
 // ---------------------------------------------------------------------------
 
-void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMilliseconds)
+void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMilliseconds,
+                                    int overlapPercent)
 {
     releaseResources();
 
@@ -145,8 +150,12 @@ void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMillisecond
 
     const int requested = static_cast<int> (newHostRate * blockSizeMilliseconds / 1000.0);
 
-    blockSize      = juce::jmax (256, requested + (requested & 1));
-    hopSize        = blockSize / 2;
+    blockSize = juce::jmax (256, requested + (requested & 1));
+
+    const int overlap = juce::jlimit (10, 50, overlapPercent);
+    hopSize = juce::jlimit (64, blockSize - 64, blockSize * (100 - overlap) / 100);
+    hopSize -= hopSize & 1;
+
     latencySamples = blockSize;
 
     const int fifoCapacity = blockSize * 8;
@@ -162,10 +171,33 @@ void NeuralVoiceConverter::prepare (double newHostRate, int blockSizeMillisecond
     overlapAccum.assign (static_cast<size_t> (blockSize), 0.0f);
     emitBuffer.assign   (static_cast<size_t> (hopSize),   0.0f);
 
-    hannWindow.resize (static_cast<size_t> (blockSize));
+    // Trapezoid: a sin-squared fade in, a flat middle, a cos-squared fade out.
+    // Adjacent copies sum to exactly one at any hop, because sin^2 + cos^2 = 1.
+    // At 50 % overlap the flat part vanishes and this reduces to a Hann.
+    const int fade = blockSize - hopSize;
+
+    fadeWindow.resize (static_cast<size_t> (blockSize));
+
     for (int n = 0; n < blockSize; ++n)
-        hannWindow[static_cast<size_t> (n)] =
-            0.5f * (1.0f - std::cos (kTwoPi * static_cast<float> (n) / static_cast<float> (blockSize)));
+    {
+        float w = 1.0f;
+
+        if (n < fade)
+        {
+            const float s = std::sin (0.5f * juce::MathConstants<float>::pi
+                                      * (static_cast<float> (n) + 0.5f) / static_cast<float> (fade));
+            w = s * s;
+        }
+        else if (n >= hopSize)
+        {
+            const int mirrored = blockSize - 1 - n;
+            const float s = std::sin (0.5f * juce::MathConstants<float>::pi
+                                      * (static_cast<float> (mirrored) + 0.5f) / static_cast<float> (fade));
+            w = s * s;
+        }
+
+        fadeWindow[static_cast<size_t> (n)] = w;
+    }
 
     const int modelBlock = static_cast<int> (std::ceil (blockSize * kModelSampleRate / hostRate)) + 64;
     impl->modelRateIn.assign  (static_cast<size_t> (modelBlock), 0.0f);
@@ -307,7 +339,7 @@ void NeuralVoiceConverter::processOneBlock()
 
     for (int n = 0; n < blockSize; ++n)
         overlapAccum[static_cast<size_t> (n)] +=
-            modelOutput[static_cast<size_t> (n)] * hannWindow[static_cast<size_t> (n)];
+            modelOutput[static_cast<size_t> (n)] * fadeWindow[static_cast<size_t> (n)];
 
     std::copy (overlapAccum.begin(), overlapAccum.begin() + hopSize, emitBuffer.begin());
     std::copy (overlapAccum.begin() + hopSize, overlapAccum.end(), overlapAccum.begin());

@@ -278,8 +278,16 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     addAndMakeVisible (linkButton);
     addAndMakeVisible (aiButton);
 
-    auto styleBox = [this] (juce::ComboBox& box, juce::Label& label, const juce::String& name)
+    auto styleBox = [this] (juce::ComboBox& box, juce::Label& label,
+                            const juce::String& name, const char* paramID)
     {
+        // The items have to come from the parameter, not a duplicate list here.
+        // A ComboBoxAttachment silently does nothing on an empty box, which is
+        // exactly how these shipped blank.
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (
+                processor.apvts.getParameter (paramID)))
+            box.addItemList (choice->choices, 1);
+
         box.setColour (juce::ComboBox::backgroundColourId, Palette::panel);
         box.setColour (juce::ComboBox::textColourId,       Palette::text);
         box.setColour (juce::ComboBox::outlineColourId,    Palette::rule);
@@ -293,8 +301,10 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
         addAndMakeVisible (label);
     };
 
-    styleBox (fftBox, fftBoxLabel, "VOCODER WINDOW");
-    styleBox (nnBox,  nnBoxLabel,  "NEURAL BLOCK");
+    styleBox (fftBox, fftBoxLabel, "VOCODER WINDOW", ParamID::fftMode);
+    styleBox (nnBox,  nnBoxLabel,  "NEURAL BLOCK",   ParamID::nnBlock);
+
+    addAndMakeVisible (lightButton);
 
     modelsButton.onClick = [this] { chooseModelFolder(); };
     voiceAButton.onClick = [this] { chooseReferenceVoice (0); };
@@ -324,6 +334,7 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     aiAmountAtt = std::make_unique<SliderAttachment> (state, ParamID::aiAmount, aiAmountSlider);
     morphAtt    = std::make_unique<SliderAttachment> (state, ParamID::morph,    morphSlider);
     linkAtt     = std::make_unique<ButtonAttachment> (state, ParamID::link,     linkButton);
+    lightAtt    = std::make_unique<ButtonAttachment> (state, ParamID::nnLight,  lightButton);
     fftAtt      = std::make_unique<ComboAttachment>  (state, ParamID::fftMode,  fftBox);
     nnAtt       = std::make_unique<ComboAttachment>  (state, ParamID::nnBlock,  nnBox);
     aiAtt       = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable, aiButton);
@@ -554,6 +565,8 @@ void VoiceMorphAudioProcessorEditor::resized()
 
     auto enableRow = neural.removeFromTop (24);
     auto nnCell    = enableRow.removeFromRight (150);
+    enableRow.removeFromRight (10);
+    lightButton.setBounds (enableRow.removeFromRight (120).withTrimmedTop (2).withHeight (20));
     nnBoxLabel.setBounds (nnCell.removeFromLeft (86).withTrimmedTop (6));
     nnBox.setBounds (nnCell);
     aiButton.setBounds (enableRow.withTrimmedTop (2).withHeight (20));

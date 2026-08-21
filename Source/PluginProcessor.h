@@ -22,6 +22,7 @@ namespace ParamID
     inline constexpr const char* morph      = "morph";
     inline constexpr const char* fftMode    = "fftMode";
     inline constexpr const char* nnBlock    = "nnBlock";
+    inline constexpr const char* nnLight    = "nnLight";
 }
 
 class VoiceMorphAudioProcessor : public juce::AudioProcessor,
@@ -81,6 +82,7 @@ private:
 
     int cachedFftMode = -1;
     int cachedNnBlock = -1;
+    int cachedNnLight = -1;
     std::atomic<bool> reconfigurePending { false };
 
     std::atomic<bool> latencyNeedsUpdate { true };

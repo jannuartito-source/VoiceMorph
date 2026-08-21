@@ -86,6 +86,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoiceMorphAudioProcessor::cr
         ParameterID { ParamID::nnBlock, 1 }, "Neural block",
         StringArray { "80 ms", "120 ms", "200 ms", "320 ms" }, 1));
 
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { ParamID::nnLight, 1 }, "CPU saver", false));
+
     return layout;
 }
 
@@ -131,11 +134,14 @@ void VoiceMorphAudioProcessor::applyQualitySettings()
 
     const double rate = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
 
+    const int light = apvts.getRawParameterValue (ParamID::nnLight)->load() > 0.5f ? 1 : 0;
+
     engine.prepare (rate, orders[juce::jlimit (0, 2, fftChoice)], 4);
-    neural.prepare (rate, blockMs[juce::jlimit (0, 3, nnChoice)]);
+    neural.prepare (rate, blockMs[juce::jlimit (0, 3, nnChoice)], light ? 25 : 50);
 
     cachedFftMode = fftChoice;
     cachedNnBlock = nnChoice;
+    cachedNnLight = light;
 }
 
 void VoiceMorphAudioProcessor::handleAsyncUpdate()
@@ -204,7 +210,9 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const int fftChoice = static_cast<int> (apvts.getRawParameterValue (ParamID::fftMode)->load());
     const int nnChoice  = static_cast<int> (apvts.getRawParameterValue (ParamID::nnBlock)->load());
 
-    if (fftChoice != cachedFftMode || nnChoice != cachedNnBlock)
+    const int lightChoice = apvts.getRawParameterValue (ParamID::nnLight)->load() > 0.5f ? 1 : 0;
+
+    if (fftChoice != cachedFftMode || nnChoice != cachedNnBlock || lightChoice != cachedNnLight)
     {
         reconfigurePending.store (true);
         triggerAsyncUpdate();
