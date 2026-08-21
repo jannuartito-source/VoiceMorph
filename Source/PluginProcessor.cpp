@@ -144,7 +144,8 @@ void VoiceMorphAudioProcessor::handleAsyncUpdate()
 
 void VoiceMorphAudioProcessor::updateLatency()
 {
-    const bool aiOn = apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f;
+    const bool aiOn = apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f
+                   && neural.isBuiltWithOnnx();
 
     const int engineLatency = engine.getLatencySamples();
     const int neuralLatency = aiOn ? neural.getLatencySamples() : 0;
@@ -190,7 +191,11 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const float gateParam    = apvts.getRawParameterValue (ParamID::gate)->load();
     const float mixParam     = apvts.getRawParameterValue (ParamID::mix)->load();
     const float outParam     = apvts.getRawParameterValue (ParamID::output)->load();
-    const bool  aiOn         = apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f;
+    // Without ONNX compiled in, the neural stage can only pass audio through.
+    // Honouring the enable switch anyway reported its full latency to the host
+    // for no benefit whatsoever: 371 ms of delay doing nothing.
+    const bool  aiOn         = apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f
+                            && neural.isBuiltWithOnnx();
     const float aiAmtParam   = apvts.getRawParameterValue (ParamID::aiAmount)->load();
     const float morphParam   = apvts.getRawParameterValue (ParamID::morph)->load();
 

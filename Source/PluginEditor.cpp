@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <initializer_list>
 #include <utility>
 
 namespace
@@ -350,6 +351,13 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
 
     updateGenderReadout();
 
+    // A DSP-only binary should not offer buttons that quietly do nothing.
+    if (! processor.getNeural().isBuiltWithOnnx())
+        for (auto* c : std::initializer_list<juce::Component*> {
+                 &aiButton, &lightButton, &nnBox, &modelsButton,
+                 &voiceAButton, &voiceBButton, &morphSlider, &aiAmountSlider })
+            c->setEnabled (false);
+
     setSize (780, 640);
     startTimerHz (4);
 }
@@ -475,7 +483,8 @@ void VoiceMorphAudioProcessorEditor::timerCallback()
 
     bool stalled = false;
 
-    const bool neuralOn = processor.apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f;
+    const bool neuralOn = processor.apvts.getRawParameterValue (ParamID::aiEnable)->load() > 0.5f
+                       && neural.isBuiltWithOnnx();
 
     if (neural.isReady() && neuralOn)
     {
