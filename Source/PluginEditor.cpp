@@ -1,14 +1,11 @@
 #include "PluginEditor.h"
 
-// The standalone build owns its audio device and can retarget it. A plugin
-// cannot: routing belongs to whatever host loaded it. __has_include keeps a
-// JUCE layout change from breaking the build outright.
-#if JucePlugin_Build_Standalone && __has_include(<juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>)
- #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
- #define VM_CAN_ROUTE 1
-#else
- #define VM_CAN_ROUTE 0
-#endif
+// juce_StandaloneFilterWindow.h is not a standalone header: it is written to be
+// compiled inside the plugin-client wrapper and falls apart anywhere else.
+// Detecting the cable needs only the audio-devices module, which is safe to
+// include, so the app reports what it finds and the user makes the switch in
+// the Options dialog they already have.
+#include <juce_audio_devices/juce_audio_devices.h>
 
 #include <array>
 #include <cmath>
@@ -339,7 +336,6 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
 
     routingButton.onClick = [this] { routeToVirtualCable(); };
     addAndMakeVisible (routingButton);
-    routingButton.setVisible (VM_CAN_ROUTE);
 
     addAndMakeVisible (modelsButton);
     addAndMakeVisible (voiceAButton);
@@ -456,85 +452,70 @@ void VoiceMorphAudioProcessorEditor::chooseReferenceVoice (int slot)
     });
 }
 
+bool VoiceMorphAudioProcessorEditor::findVirtualCable (juce::String& nameOut)
+{
+   #if JUCE_WINDOWS
+    std::unique_ptr<juce::AudioIODeviceType> type (
+        juce::AudioIODeviceType::createAudioIODeviceType_WASAPI (juce::WASAPIDeviceMode::shared));
+
+    if (type == nullptr)
+        return false;
+
+    type->scanForDevices();
+
+    for (const auto& device : type->getDeviceNames (false))
+        for (const auto& needle : kCableNames)
+            if (device.containsIgnoreCase (needle))
+            {
+                nameOut = device;
+                return true;
+            }
+   #else
+    juce::ignoreUnused (nameOut);
+   #endif
+
+    return false;
+}
+
 void VoiceMorphAudioProcessorEditor::refreshRoutingButton()
 {
-#if VM_CAN_ROUTE
-    auto* holder = juce::StandalonePluginHolder::getInstance();
+    // Scanning enumerates hardware, so it happens once here and again only
+    // when the button is pressed, never on the repaint timer.
+    juce::String cable;
+    cableInstalled = findVirtualCable (cable);
+    cableName      = cable;
 
-    if (holder == nullptr)
-        return;
-
-    auto& manager = holder->deviceManager;
-
-    juce::String current;
-    if (auto* device = manager.getCurrentAudioDevice())
-        current = device->getName();
-
-    auto matchesCable = [] (const juce::String& name)
-    {
-        for (const auto& needle : kCableNames)
-            if (name.containsIgnoreCase (needle))
-                return true;
-
-        return false;
-    };
-
-    if (matchesCable (current))
-    {
-        routingButton.setButtonText ("Output is going to " + current);
-        routingButton.setEnabled (false);
-        return;
-    }
-
-    bool installed = false;
-
-    if (auto* type = manager.getCurrentDeviceTypeObject())
-        for (const auto& name : type->getDeviceNames (false))
-            if (matchesCable (name))
-                installed = true;
-
-    routingButton.setButtonText (installed ? "Send output to VB-Cable  (for OBS, Discord)"
-                                           : "VB-Cable not installed  -  get it (free)");
-    routingButton.setEnabled (true);
-#endif
+    routingButton.setButtonText (cableInstalled
+        ? "Found " + cableName + "  -  set it as Output in Options"
+        : "VB-Cable not installed  -  get it (free, needed for OBS)");
 }
 
 void VoiceMorphAudioProcessorEditor::routeToVirtualCable()
 {
-#if VM_CAN_ROUTE
-    auto* holder = juce::StandalonePluginHolder::getInstance();
+    juce::String cable;
 
-    if (holder == nullptr)
-        return;
-
-    auto& manager = holder->deviceManager;
-    auto* type    = manager.getCurrentDeviceTypeObject();
-
-    juce::String target;
-
-    if (type != nullptr)
-        for (const auto& name : type->getDeviceNames (false))
-            for (const auto& needle : kCableNames)
-                if (name.containsIgnoreCase (needle) && target.isEmpty())
-                    target = name;
-
-    if (target.isEmpty())
+    if (! findVirtualCable (cable))
     {
         juce::URL (kCableDownloadUrl).launchInDefaultBrowser();
         return;
     }
 
-    auto setup = manager.getAudioDeviceSetup();
-    setup.outputDeviceName = target;
+    cableInstalled = true;
+    cableName      = cable;
 
-    const auto error = manager.setAudioDeviceSetup (setup, true);
-
-    statusLabel.setText (error.isEmpty() ? "Output routed to " + target
-                                         : "Could not switch device: " + error,
-                         juce::dontSendNotification);
+    juce::NativeMessageBox::showMessageBoxAsync (
+        juce::MessageBoxIconType::InfoIcon,
+        "Route audio to " + cable,
+        "Open Options at the top left, then Audio/MIDI Settings, and set\n\n"
+        "    Output:  " + cable + "\n"
+        "    Input:   your microphone\n\n"
+        "Then in OBS or Discord choose CABLE Output as the input device.\n\n"
+        "Switching the device from here would mean reaching into JUCE's "
+        "standalone wrapper, which does not compile cleanly from a shared "
+        "source file, so this is a signpost rather than a shortcut.",
+        this);
 
     refreshRoutingButton();
-#endif
 }
 
 void VoiceMorphAudioProcessorEditor::updateGenderReadout()
@@ -576,7 +557,6 @@ void VoiceMorphAudioProcessorEditor::refreshVoiceButtons()
 void VoiceMorphAudioProcessorEditor::timerCallback()
 {
     statusLabel.setText (processor.getStatusMessage(), juce::dontSendNotification);
-    refreshRoutingButton();
 
     const auto latencyMs = 1000.0 * processor.getLatencySamples()
                          / juce::jmax (1.0, processor.getSampleRate());
@@ -739,11 +719,8 @@ void VoiceMorphAudioProcessorEditor::resized()
     morphSlider.setBounds (neural.removeFromTop (18).reduced (40, 0));
 
     // --- Routing --------------------------------------------------------
-    if (routingButton.isVisible())
-    {
-        area.removeFromTop (10);
-        routingButton.setBounds (area.removeFromTop (26));
-    }
+    area.removeFromTop (10);
+    routingButton.setBounds (area.removeFromTop (26));
 
     // --- Footer -------------------------------------------------------------
     auto footer = getLocalBounds().removeFromBottom (30).reduced (20, 8);

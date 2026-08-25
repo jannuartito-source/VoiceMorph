@@ -84,6 +84,7 @@ private:
     /** VB-Cable is what lets Discord, OBS or a game see this as a microphone.
         Finding it in a device list and switching to it is four menus deep, so
         the app does it. */
+    static bool findVirtualCable (juce::String& nameOut);
     void refreshRoutingButton();
     void routeToVirtualCable();
 
@@ -107,6 +108,8 @@ private:
     juce::Label    fftBoxLabel, nnBoxLabel;
 
     juce::TextButton routingButton { "Checking for VB-Cable..." };
+    juce::String     cableName;
+    bool             cableInstalled = false;
 
     juce::TextButton modelsButton { "Load models folder" };
     juce::TextButton voiceAButton { "Voice A: empty" };

@@ -115,10 +115,14 @@ device for other apps to pick up.
 Route: mic → host → VoiceMorph → virtual cable → Discord/OBS selects the cable
 as its input.
 
-The standalone app shortcuts most of this. Once VB-Cable is installed and the
-machine restarted, **Send output to VB-Cable** finds the device and switches to
-it; if it is not installed the same button opens the download page. In OBS,
-pick **CABLE Output** as the device for Audio Input Capture.
+The app scans for the cable and reports what it finds on the button above the
+status bar: it opens the download page when the driver is absent, and names the
+device once it is there. Setting it still happens in Options → Audio/MIDI
+Settings. Switching the device from inside the editor would mean reaching into
+JUCE's standalone wrapper, whose header is written to be compiled inside the
+plugin-client target and does not survive being included from a shared source
+file — that attempt is what broke a build rather than saving four clicks. In
+OBS, pick **CABLE Output** for Audio Input Capture.
 
 VB-Cable is not bundled and cannot be. It is a signed kernel-mode driver, and
 that is also why VoiceMorph cannot register itself as a microphone the way

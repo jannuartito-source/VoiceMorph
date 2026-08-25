@@ -57,6 +57,7 @@ target_compile_definitions(VoiceMorph PUBLIC
     JUCE_DISPLAY_SPLASH_SCREEN=0)
 
 target_link_libraries(VoiceMorph PRIVATE
+    juce::juce_audio_devices
     juce::juce_audio_utils
     juce::juce_dsp
     PUBLIC
