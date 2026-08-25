@@ -71,8 +71,15 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Components: s
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Components: standalone; Flags: unchecked
+Name: "getcable";    Description: "Open the VB-Cable download page (needed for OBS and Discord)"; Components: standalone
 
 [Run]
+; VB-Cable cannot be bundled: it is a signed kernel driver and VB-Audio's
+; licence does not permit redistribution. Opening their page is as close as
+; this installer can legitimately get.
+Filename: "https://vb-audio.com/Cable/"; Description: "Get VB-Cable"; \
+    Flags: shellexec nowait postinstall skipifsilent; Tasks: getcable
+
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
     Components: standalone; Flags: nowait postinstall skipifsilent
 
@@ -97,10 +104,12 @@ begin
 
     if not Cable then
       MsgBox('VoiceMorph is installed.' + #13#10#13#10 +
-             'To use it as a microphone in Discord, OBS or a game, you also need ' +
-             'a virtual audio cable. VB-Cable is free: set it as VoiceMorph''s ' +
-             'output, then select it as the input in the other app.' + #13#10#13#10 +
-             'Without one, you can still hear the effect through your own speakers.',
+             'To appear as a microphone in Discord, OBS or a game you also need ' +
+             'VB-Cable, a small free driver. Install it and restart, then open ' +
+             'VoiceMorph and click "Send output to VB-Cable" - the app finds it ' +
+             'and switches over for you.' + #13#10#13#10 +
+             'In OBS, choose CABLE Output as the device for Audio Input Capture.' + #13#10#13#10 +
+             'Without it you can still hear the effect through your own headphones.',
              mbInformation, MB_OK);
   end;
 end;

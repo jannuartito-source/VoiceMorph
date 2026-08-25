@@ -115,6 +115,17 @@ device for other apps to pick up.
 Route: mic → host → VoiceMorph → virtual cable → Discord/OBS selects the cable
 as its input.
 
+The standalone app shortcuts most of this. Once VB-Cable is installed and the
+machine restarted, **Send output to VB-Cable** finds the device and switches to
+it; if it is not installed the same button opens the download page. In OBS,
+pick **CABLE Output** as the device for Audio Input Capture.
+
+VB-Cable is not bundled and cannot be. It is a signed kernel-mode driver, and
+that is also why VoiceMorph cannot register itself as a microphone the way
+Voicemod does: doing so needs a driver signed with an EV certificate plus
+Microsoft attestation, which is an administrative barrier rather than a coding
+one.
+
 ---
 
 ## Controls
@@ -270,12 +281,18 @@ than like a crash.
 ## Architecture
 
 ```
-input ─┬─────────────────────── dry delay ──────────────┐
+input ─┬──────────────────────────── dry delay ─────────┐
        │                                                 │
-       └─ gate ─ phase vocoder ─┬─ dsp delay ────────────┤
-                                │                        ├─ mix ─ output
-                                └─ neural (worker) ──────┘
+       └─ gate ─┬─ phase vocoder ─ align delay ──┐       ├─ mix ─ output
+                │                                ├─ amt ─┘
+                └─ neural (worker thread) ───────┘
 ```
+
+The vocoder and the neural stage run **in parallel off the same clean signal**,
+never in series. A content encoder is trained on human speech; handing it a
+phase-vocoded chipmunk produces meaningless features, and the decoder
+synthesises the meaninglessness perfectly. Running them in parallel also means
+total latency is the longer of the two rather than their sum.
 
 The audio thread never blocks. It pushes to and pops from lock-free FIFOs; all
 inference happens on a worker thread. Delay lines keep the three paths sample-

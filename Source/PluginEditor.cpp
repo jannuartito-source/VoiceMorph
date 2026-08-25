@@ -1,5 +1,15 @@
 #include "PluginEditor.h"
 
+// The standalone build owns its audio device and can retarget it. A plugin
+// cannot: routing belongs to whatever host loaded it. __has_include keeps a
+// JUCE layout change from breaking the build outright.
+#if JucePlugin_Build_Standalone && __has_include(<juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>)
+ #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+ #define VM_CAN_ROUTE 1
+#else
+ #define VM_CAN_ROUTE 0
+#endif
+
 #include <array>
 #include <cmath>
 #include <initializer_list>
@@ -7,6 +17,13 @@
 
 namespace
 {
+    /** Substring that identifies the virtual cable's input endpoint. VB-Audio
+        names it "CABLE Input (VB-Audio Virtual Cable)"; VoiceMeeter's variants
+        also begin with "VoiceMeeter Input". */
+    const juce::StringArray kCableNames { "CABLE Input", "VoiceMeeter Input", "VoiceMeeter Aux Input" };
+
+    constexpr const char* kCableDownloadUrl = "https://vb-audio.com/Cable/";
+
     constexpr float kDisplayLowHz  = 70.0f;
     constexpr float kDisplayHighHz = 11000.0f;
     constexpr float kDisplayRangeDb = 60.0f;
@@ -320,6 +337,10 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     voiceAButton.onClick = [this] { chooseReferenceVoice (0); };
     voiceBButton.onClick = [this] { chooseReferenceVoice (1); };
 
+    routingButton.onClick = [this] { routeToVirtualCable(); };
+    addAndMakeVisible (routingButton);
+    routingButton.setVisible (VM_CAN_ROUTE);
+
     addAndMakeVisible (modelsButton);
     addAndMakeVisible (voiceAButton);
     addAndMakeVisible (voiceBButton);
@@ -350,6 +371,7 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
     aiAtt       = std::make_unique<ButtonAttachment> (state, ParamID::aiEnable, aiButton);
 
     updateGenderReadout();
+    refreshRoutingButton();
 
     // A DSP-only binary should not offer buttons that quietly do nothing.
     if (! processor.getNeural().isBuiltWithOnnx())
@@ -358,7 +380,7 @@ VoiceMorphAudioProcessorEditor::VoiceMorphAudioProcessorEditor (VoiceMorphAudioP
                  &voiceAButton, &voiceBButton, &morphSlider, &aiAmountSlider })
             c->setEnabled (false);
 
-    setSize (780, 640);
+    setSize (780, 682);
     startTimerHz (4);
 }
 
@@ -434,6 +456,87 @@ void VoiceMorphAudioProcessorEditor::chooseReferenceVoice (int slot)
     });
 }
 
+void VoiceMorphAudioProcessorEditor::refreshRoutingButton()
+{
+#if VM_CAN_ROUTE
+    auto* holder = juce::StandalonePluginHolder::getInstance();
+
+    if (holder == nullptr)
+        return;
+
+    auto& manager = holder->deviceManager;
+
+    juce::String current;
+    if (auto* device = manager.getCurrentAudioDevice())
+        current = device->getName();
+
+    auto matchesCable = [] (const juce::String& name)
+    {
+        for (const auto& needle : kCableNames)
+            if (name.containsIgnoreCase (needle))
+                return true;
+
+        return false;
+    };
+
+    if (matchesCable (current))
+    {
+        routingButton.setButtonText ("Output is going to " + current);
+        routingButton.setEnabled (false);
+        return;
+    }
+
+    bool installed = false;
+
+    if (auto* type = manager.getCurrentDeviceTypeObject())
+        for (const auto& name : type->getDeviceNames (false))
+            if (matchesCable (name))
+                installed = true;
+
+    routingButton.setButtonText (installed ? "Send output to VB-Cable  (for OBS, Discord)"
+                                           : "VB-Cable not installed  -  get it (free)");
+    routingButton.setEnabled (true);
+#endif
+}
+
+void VoiceMorphAudioProcessorEditor::routeToVirtualCable()
+{
+#if VM_CAN_ROUTE
+    auto* holder = juce::StandalonePluginHolder::getInstance();
+
+    if (holder == nullptr)
+        return;
+
+    auto& manager = holder->deviceManager;
+    auto* type    = manager.getCurrentDeviceTypeObject();
+
+    juce::String target;
+
+    if (type != nullptr)
+        for (const auto& name : type->getDeviceNames (false))
+            for (const auto& needle : kCableNames)
+                if (name.containsIgnoreCase (needle) && target.isEmpty())
+                    target = name;
+
+    if (target.isEmpty())
+    {
+        juce::URL (kCableDownloadUrl).launchInDefaultBrowser();
+        return;
+    }
+
+    auto setup = manager.getAudioDeviceSetup();
+    setup.outputDeviceName = target;
+
+    const auto error = manager.setAudioDeviceSetup (setup, true);
+
+    statusLabel.setText (error.isEmpty() ? "Output routed to " + target
+                                         : "Could not switch device: " + error,
+                         juce::dontSendNotification);
+
+    refreshRoutingButton();
+#endif
+}
+
 void VoiceMorphAudioProcessorEditor::updateGenderReadout()
 {
     const auto value = static_cast<float> (genderSlider.getValue());
@@ -473,6 +576,7 @@ void VoiceMorphAudioProcessorEditor::refreshVoiceButtons()
 void VoiceMorphAudioProcessorEditor::timerCallback()
 {
     statusLabel.setText (processor.getStatusMessage(), juce::dontSendNotification);
+    refreshRoutingButton();
 
     const auto latencyMs = 1000.0 * processor.getLatencySamples()
                          / juce::jmax (1.0, processor.getSampleRate());
@@ -633,6 +737,13 @@ void VoiceMorphAudioProcessorEditor::resized()
     neural.removeFromTop (10);
     morphLabel.setBounds (neural.removeFromTop (14));
     morphSlider.setBounds (neural.removeFromTop (18).reduced (40, 0));
+
+    // --- Routing --------------------------------------------------------
+    if (routingButton.isVisible())
+    {
+        area.removeFromTop (10);
+        routingButton.setBounds (area.removeFromTop (26));
+    }
 
     // --- Footer -------------------------------------------------------------
     auto footer = getLocalBounds().removeFromBottom (30).reduced (20, 8);

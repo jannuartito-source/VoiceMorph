@@ -150,10 +150,14 @@ void VoiceMorphAudioProcessor::updateLatency()
     const int engineLatency = engine.getLatencySamples();
     const int neuralLatency = aiOn ? neural.getLatencySamples() : 0;
 
-    dspDelay.setDelay (static_cast<float> (neuralLatency));
-    dryDelay.setDelay (static_cast<float> (engineLatency + neuralLatency));
+    // The two wet paths now run in parallel off the same clean signal rather
+    // than in series, so the total is the longer of them, not their sum.
+    const int totalLatency = juce::jmax (engineLatency, neuralLatency);
 
-    setLatencySamples (engineLatency + neuralLatency);
+    dspDelay.setDelay (static_cast<float> (totalLatency - engineLatency));
+    dryDelay.setDelay (static_cast<float> (totalLatency));
+
+    setLatencySamples (totalLatency);
     latencyNeedsUpdate.store (false);
 }
 
@@ -209,7 +213,8 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         reconfigurePending.store (true);
         triggerAsyncUpdate();
     }
-    else if (getLatencySamples() != engine.getLatencySamples() + (aiOn ? neural.getLatencySamples() : 0))
+    else if (getLatencySamples() != juce::jmax (engine.getLatencySamples(),
+                                                aiOn ? neural.getLatencySamples() : 0))
     {
         triggerAsyncUpdate();
     }
@@ -246,8 +251,14 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     dryBuffer.copyFrom (0, 0, monoBuffer, 0, 0, numSamples);
 
     // --- Wet chain ----------------------------------------------------------
+    //
+    // Ordering matters more than it looks. The neural stage is handed the
+    // clean gated signal, never the vocoder's output: a content encoder is
+    // trained on human speech, and a phase vocoder running at +9 semitones
+    // hands it a chipmunk full of reconstruction artefacts. The features that
+    // come back are meaningless and the decoder faithfully synthesises the
+    // meaninglessness. Pitch and formant belong on the dry path, in parallel.
     gate.process (mono, numSamples);
-    engine.process (mono, numSamples);
 
     aiBuffer.setSize (1, numSamples, false, false, true);
     auto* ai = aiBuffer.getWritePointer (0);
@@ -255,7 +266,9 @@ void VoiceMorphAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
     const bool aiProduced = aiOn && neural.process (ai, numSamples);
 
-    // Align the vocoder path with the neural path so the blend is coherent.
+    engine.process (mono, numSamples);
+
+    // The vocoder is much faster than the neural stage, so it waits for it.
     for (int i = 0; i < numSamples; ++i)
     {
         dspDelay.pushSample (0, mono[i]);
